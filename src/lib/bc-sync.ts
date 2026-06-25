@@ -6,6 +6,8 @@ const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
   { type: "companies", fetch: () => bcApi.getCompanies() },
   { type: "customers", fetch: () => bcApi.getCustomers() },
   { type: "custLedgEntries", fetch: () => bcApi.getCustomerLedgerEntries() },
+  { type: "salesOrders", fetch: () => bcApi.getSalesOrders() },
+  { type: "salesOrderLines", fetch: () => bcApi.getSalesOrderLines() },
   { type: "mr", fetch: () => bcApi.getMr() },
   { type: "salespersons", fetch: () => bcApi.getSalespersons() },
   { type: "items", fetch: () => bcApi.getItems() },

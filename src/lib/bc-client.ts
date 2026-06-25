@@ -41,6 +41,22 @@ async function request<T>(
   return response.data;
 }
 
+async function requestAll(url: string): Promise<{ value: unknown[] }> {
+  const rows: unknown[] = [];
+  let nextUrl: string | undefined = url;
+
+  while (nextUrl) {
+    const page = (await request("GET", nextUrl)) as {
+      value?: unknown[];
+      "@odata.nextLink"?: string;
+    };
+    if (Array.isArray(page.value)) rows.push(...page.value);
+    nextUrl = page["@odata.nextLink"];
+  }
+
+  return { value: rows };
+}
+
 export const bcApi = {
   getCompanies: () => request("GET", `${getApiBase()}/companies`),
 
@@ -54,6 +70,12 @@ export const bcApi = {
   getSalespersons: () => request("GET", `${getCompanyPath()}/salespersons`),
 
   getItems: () => request("GET", `${getCompanyPath()}/items`),
+
+  getSalesOrders: () =>
+    requestAll(`${getCompanyPath()}/salesOrders`),
+
+  getSalesOrderLines: () =>
+    requestAll(`${getCompanyPath()}/salesOrderLines`),
 
   getUoms: (filter?: string) => {
     const url = filter

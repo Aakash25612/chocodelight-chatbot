@@ -7,10 +7,12 @@ type Message = {
   content: string;
 };
 
-type Conversation = {
+type LocalChat = {
   id: string;
-  title: string | null;
-  updated_at: string;
+  title: string;
+  messages: Message[];
+  updatedAt: string;
+  apiConversationId?: string;
 };
 
 type HealthStatus = {
@@ -26,194 +28,412 @@ type HealthStatus = {
   ready: boolean;
 };
 
+const STORAGE_KEY = "chocodelight-chat-history:v1";
+const REPORT_STORAGE_PREFIX = "chocodelight-report:";
+
 const WELCOME =
-  "Hello! I'm your **ChocoDelight BC Assistant**. Ask me about customers, items, sales orders, ledger entries, and more.\n\nData is served from **Supabase** — no VPN needed on your device.\n\nWhat would you like to do?";
+  "Hello! I'm your **ChocoDelight BC Assistant**. Ask me about customers, items, sales orders, ledger entries, and more.\n\nData is served from **Supabase** so you do not need VPN on this device.\n\nWhat would you like to do?";
+
+const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
 const SUGGESTIONS = [
   "List all customers",
+  "What is my revenue this year?",
   "Show available items",
   "Get pending items for customer ACM0000159",
-  "What API endpoints are available?",
 ];
 
+function createId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createTitle(text: string): string {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > 44 ? `${clean.slice(0, 44)}...` : clean || "New chat";
+}
+
+function isReportPrompt(text: string): boolean {
+  return /\b(report|pdf|chart|graph|dashboard|analysis|summary)\b/i.test(text);
+}
+
+function readLocalChats(): LocalChat[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as LocalChat[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((chat) => chat.id && Array.isArray(chat.messages))
+      .sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+      );
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalChats(chats: LocalChat[]): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const text = await response.text();
+
+  if (!text.trim()) {
+    if (response.ok) return {} as T;
+    throw new Error(`Server returned ${response.status} with an empty response`);
+  }
+
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const preview = text.slice(0, 180).replace(/\s+/g, " ");
+    throw new Error(
+      `Server returned ${response.status} but not JSON: ${preview || "empty body"}`,
+    );
+  }
+}
+
 export default function ChatInterface() {
-  const [messages, setMessages] = useState<Message[]>([
-    { role: "assistant", content: WELCOME },
-  ]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MESSAGE]);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [apiConversationId, setApiConversationId] = useState<string | null>(null);
+  const [chats, setChats] = useState<LocalChat[]>([]);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [reportMode, setReportMode] = useState(false);
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const loadHealth = useCallback(async () => {
     try {
       const res = await fetch("/api/health");
-      const data = await res.json();
+      const data = await readJsonResponse<HealthStatus>(res);
       setHealth(data);
     } catch {
       setHealth(null);
     }
   }, []);
 
-  const loadConversations = useCallback(async () => {
-    try {
-      const res = await fetch("/api/conversations");
-      if (!res.ok) return;
-      const data = await res.json();
-      setConversations(data.conversations ?? []);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   useEffect(() => {
+    const storedChats = readLocalChats();
+    setChats(storedChats);
+    setSidebarOpen(window.innerWidth >= 768);
     loadHealth();
-    loadConversations();
     const interval = setInterval(loadHealth, 30000);
     return () => clearInterval(interval);
-  }, [loadHealth, loadConversations]);
+  }, [loadHealth]);
 
-  async function loadConversation(id: string) {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/conversations/${id}`);
-      const data = await res.json();
-      const loaded: Message[] = (data.messages ?? []).map(
-        (m: { role: string; content: string }) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }),
+  useEffect(() => {
+    setTimeout(() => {
+      scrollRef.current?.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    }, 50);
+  }, [messages]);
+
+  function persistChat(chat: LocalChat): void {
+    setChats((prev) => {
+      const next = [chat, ...prev.filter((item) => item.id !== chat.id)].sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       );
-      setConversationId(id);
-      setMessages(loaded.length ? loaded : [{ role: "assistant", content: WELCOME }]);
-    } finally {
-      setLoading(false);
-    }
+      writeLocalChats(next);
+      return next;
+    });
   }
 
   function startNewChat() {
-    setConversationId(null);
-    setMessages([{ role: "assistant", content: WELCOME }]);
+    setCurrentChatId(null);
+    setApiConversationId(null);
+    setMessages([WELCOME_MESSAGE]);
+    setInput("");
+    setReportMode(false);
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
+  }
+
+  function loadChat(chat: LocalChat) {
+    setCurrentChatId(chat.id);
+    setApiConversationId(chat.apiConversationId ?? null);
+    setMessages(chat.messages.length ? chat.messages : [WELCOME_MESSAGE]);
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      setSidebarOpen(false);
+    }
+  }
+
+  function deleteChat(chatId: string) {
+    setChats((prev) => {
+      const next = prev.filter((chat) => chat.id !== chatId);
+      writeLocalChats(next);
+      return next;
+    });
+
+    if (chatId === currentChatId) {
+      startNewChat();
+    }
   }
 
   async function sendMessage(text: string) {
     if (!text.trim() || loading) return;
 
     const userMessage: Message = { role: "user", content: text.trim() };
-    const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
+    const previousMessages =
+      messages.length === 1 &&
+      messages[0].role === "assistant" &&
+      messages[0].content === WELCOME
+        ? []
+        : messages;
+    const chatId = currentChatId ?? createId();
+    const baseMessages = [...previousMessages, userMessage];
+    const now = new Date().toISOString();
+    const title =
+      chats.find((chat) => chat.id === chatId)?.title ?? createTitle(text);
+
+    setCurrentChatId(chatId);
+    setMessages(baseMessages);
     setInput("");
     setLoading(true);
+    persistChat({
+      id: chatId,
+      title,
+      messages: baseMessages,
+      updatedAt: now,
+      apiConversationId: apiConversationId ?? undefined,
+    });
 
     try {
+      if (reportMode || isReportPrompt(text)) {
+        const reportMessage = await generateReportMessage(text);
+        const reportMessages = [...baseMessages, reportMessage];
+        setMessages(reportMessages);
+        setReportMode(false);
+        persistChat({
+          id: chatId,
+          title,
+          messages: reportMessages,
+          updatedAt: new Date().toISOString(),
+          apiConversationId: apiConversationId ?? undefined,
+        });
+        return;
+      }
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: nextMessages, conversationId }),
+        body: JSON.stringify({
+          messages: baseMessages,
+          conversationId: apiConversationId,
+        }),
       });
 
-      const data = await res.json();
+      const data = await readJsonResponse<{
+        error?: string;
+        message?: string;
+        conversationId?: string;
+      }>(res);
 
       if (!res.ok) {
         throw new Error(data.error ?? "Request failed");
       }
 
-      if (data.conversationId) {
-        setConversationId(data.conversationId);
-        loadConversations();
-      }
+      const nextApiConversationId = data.conversationId ?? apiConversationId;
+      const assistantMessage: Message = {
+        role: "assistant",
+        content: data.message ?? "",
+      };
+      const nextMessages = [...baseMessages, assistantMessage];
 
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: data.message },
-      ]);
+      setApiConversationId(nextApiConversationId ?? null);
+      setMessages(nextMessages);
+      persistChat({
+        id: chatId,
+        title,
+        messages: nextMessages,
+        updatedAt: new Date().toISOString(),
+        apiConversationId: nextApiConversationId ?? undefined,
+      });
     } catch (error) {
       const msg = error instanceof Error ? error.message : "Something went wrong";
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Sorry, I encountered an error: ${msg}` },
-      ]);
+      const errorMessages = [
+        ...baseMessages,
+        {
+          role: "assistant" as const,
+          content: `Sorry, I encountered an error: ${msg}`,
+        },
+      ];
+      setMessages(errorMessages);
+      persistChat({
+        id: chatId,
+        title,
+        messages: errorMessages,
+        updatedAt: new Date().toISOString(),
+        apiConversationId: apiConversationId ?? undefined,
+      });
     } finally {
       setLoading(false);
-      setTimeout(() => {
-        scrollRef.current?.scrollTo({
-          top: scrollRef.current.scrollHeight,
-          behavior: "smooth",
-        });
-      }, 100);
     }
   }
 
+  function toggleReportMode() {
+    setReportMode((current) => !current);
+  }
+
+  async function generateReportMessage(prompt: string): Promise<Message> {
+    const res = await fetch("/api/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const data = await readJsonResponse<{
+      error?: string;
+      title?: string;
+      html?: string;
+    }>(res);
+
+    if (!res.ok || !data.html || !data.title) {
+      throw new Error(data.error ?? "Could not generate report");
+    }
+
+    const reportId = createId();
+    window.localStorage.setItem(
+      `${REPORT_STORAGE_PREFIX}${reportId}`,
+      JSON.stringify({
+        title: data.title,
+        html: data.html,
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    return {
+      role: "assistant",
+      content: [
+        `Your **${data.title}** is ready.`,
+        "",
+        `[[report:${reportId}|Open Report / Save PDF]]`,
+        "",
+        "It includes charts, customer/sales tables, and a profit-data note based on the latest Supabase sync.",
+      ].join("\n"),
+    };
+  }
+
   return (
-    <div className="flex h-full bg-[#1a0f0a]">
+    <div className="flex h-full w-full overflow-hidden bg-zinc-50 text-zinc-950">
       {sidebarOpen && (
-        <aside className="flex w-64 flex-col border-r border-amber-900/40 bg-[#140c08]">
-          <div className="border-b border-amber-900/40 p-4">
-            <button
-              type="button"
-              onClick={startNewChat}
-              className="w-full rounded-xl bg-amber-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-amber-500"
-            >
-              + New Chat
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2">
-            {conversations.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => loadConversation(c.id)}
-                className={`mb-1 w-full rounded-lg px-3 py-2 text-left text-xs transition ${
-                  conversationId === c.id
-                    ? "bg-amber-900/50 text-amber-100"
-                    : "text-amber-200/70 hover:bg-amber-900/20"
-                }`}
-              >
-                <p className="truncate font-medium">{c.title ?? "Untitled"}</p>
-                <p className="mt-0.5 text-[10px] text-amber-200/40">
-                  {new Date(c.updated_at).toLocaleDateString()}
-                </p>
-              </button>
-            ))}
-          </div>
-        </aside>
+        <button
+          type="button"
+          aria-label="Close conversations"
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-20 bg-black/20 backdrop-blur-sm md:hidden"
+        />
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <header className="border-b border-amber-900/40 bg-[#2d1810] px-6 py-4">
+      <aside
+        className={`fixed inset-y-0 left-0 z-30 flex w-[min(20rem,88vw)] flex-col border-r border-zinc-200 bg-white/95 shadow-xl backdrop-blur transition-transform duration-200 md:relative md:w-72 md:translate-x-0 md:shadow-none ${
+          sidebarOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex items-center gap-2 border-b border-zinc-200 p-3">
+          <button
+            type="button"
+            onClick={startNewChat}
+            className="flex-1 rounded-full bg-zinc-950 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-zinc-800"
+          >
+            New Chat
+          </button>
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="rounded-full p-2 text-zinc-500 transition hover:bg-zinc-100 md:hidden"
+            aria-label="Close sidebar"
+          >
+            x
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2">
+          {chats.length === 0 ? (
+            <p className="px-3 py-4 text-sm text-zinc-400">
+              Your chats will be saved on this device.
+            </p>
+          ) : (
+            chats.map((chat) => (
+              <div
+                key={chat.id}
+                className={`group mb-1 flex items-center gap-1 rounded-xl pr-1 transition ${
+                  currentChatId === chat.id
+                    ? "bg-zinc-100 text-zinc-950"
+                    : "text-zinc-500 hover:bg-zinc-50 hover:text-zinc-950"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => loadChat(chat)}
+                  className="min-w-0 flex-1 px-3 py-2 text-left text-xs"
+                >
+                  <p className="truncate font-medium">{chat.title}</p>
+                  <p className="mt-0.5 text-[10px] text-zinc-400">
+                    {new Date(chat.updatedAt).toLocaleDateString()}
+                  </p>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteChat(chat.id)}
+                  className="rounded-full px-2 py-1 text-xs text-zinc-400 opacity-100 transition hover:bg-white hover:text-red-600 md:opacity-0 md:group-hover:opacity-100"
+                  aria-label={`Delete ${chat.title}`}
+                >
+                  Delete
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 px-3 py-3 backdrop-blur-xl sm:px-6">
           <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
+            <div className="flex min-w-0 items-center gap-3">
               <button
                 type="button"
-                onClick={() => setSidebarOpen(!sidebarOpen)}
-                className="rounded-lg p-2 text-amber-200/60 hover:bg-amber-900/30"
+                onClick={() => setSidebarOpen(true)}
+                className="rounded-full p-2 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950 md:hidden"
+                aria-label="Open conversations"
               >
-                ☰
+                <span className="block h-0.5 w-4 bg-current" />
+                <span className="mt-1 block h-0.5 w-4 bg-current" />
               </button>
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-600 text-lg">
-                🍫
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-zinc-950 text-xs font-semibold text-white shadow-sm sm:h-10 sm:w-10 sm:text-sm">
+                CD
               </div>
-              <div>
-                <h1 className="text-lg font-semibold text-amber-50">
+              <div className="min-w-0">
+                <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-950 sm:text-lg">
                   ChocoDelight BC Assistant
                 </h1>
-                <p className="text-sm text-amber-200/60">
-                  Gemini · Business Central · Supabase
+                <p className="truncate text-xs text-zinc-500 sm:text-sm">
+                  Gemini, Business Central, Supabase
                 </p>
               </div>
             </div>
             {health && (
-              <div className="flex items-center gap-3 text-xs">
+              <div className="hidden items-center gap-3 text-xs sm:flex">
                 <StatusPill
                   label="BC Data"
                   ok={health.bcApi.reachable}
                   detail={
                     health.mode === "supabase_mirror"
                       ? health.bcApi.reachable
-                        ? `${health.bcApi.entities ?? 0} datasets synced`
+                        ? `${health.bcApi.entities ?? 0} synced`
                         : "Awaiting sync"
                       : health.bcApi.reachable
                         ? `${health.bcApi.companies} companies online`
@@ -225,18 +445,21 @@ export default function ChatInterface() {
           </div>
         </header>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-6">
+        <div
+          ref={scrollRef}
+          className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-5 sm:px-4 sm:py-8"
+        >
           <div className="mx-auto max-w-4xl space-y-4">
             {messages.map((msg, i) => (
               <div
-                key={i}
+                key={`${msg.role}-${i}`}
                 className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                  className={`max-w-[92%] overflow-hidden rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm sm:max-w-[85%] ${
                     msg.role === "user"
-                      ? "bg-amber-600 text-white"
-                      : "bg-[#2d1810] text-amber-50 border border-amber-900/30"
+                      ? "bg-zinc-950 text-white"
+                      : "border border-zinc-200 bg-white text-zinc-800"
                   }`}
                 >
                   <MessageContent content={msg.content} />
@@ -246,11 +469,11 @@ export default function ChatInterface() {
 
             {loading && (
               <div className="flex justify-start">
-                <div className="rounded-2xl border border-amber-900/30 bg-[#2d1810] px-4 py-3">
+                <div className="rounded-2xl border border-zinc-200 bg-white px-4 py-3 shadow-sm">
                   <div className="flex gap-1">
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-amber-500 [animation-delay:0ms]" />
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-amber-500 [animation-delay:150ms]" />
-                    <span className="h-2 w-2 animate-bounce rounded-full bg-amber-500 [animation-delay:300ms]" />
+                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-400 [animation-delay:0ms]" />
+                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-400 [animation-delay:150ms]" />
+                    <span className="h-2 w-2 animate-bounce rounded-full bg-zinc-400 [animation-delay:300ms]" />
                   </div>
                 </div>
               </div>
@@ -258,26 +481,40 @@ export default function ChatInterface() {
           </div>
         </div>
 
-        {messages.length === 1 && !conversationId && (
-          <div className="px-4 pb-2">
-            <div className="mx-auto flex max-w-4xl flex-wrap gap-2">
-              {SUGGESTIONS.map((s) => (
+        {messages.length === 1 && messages[0].content === WELCOME && (
+          <div className="px-3 pb-2 sm:px-4">
+            <div className="mx-auto flex max-w-4xl gap-2 overflow-x-auto pb-1">
+              {SUGGESTIONS.map((suggestion) => (
                 <button
-                  key={s}
+                  key={suggestion}
                   type="button"
-                  onClick={() => sendMessage(s)}
-                  className="rounded-full border border-amber-800/50 bg-[#2d1810] px-3 py-1.5 text-xs text-amber-200/80 transition hover:border-amber-600 hover:text-amber-100"
+                  onClick={() => sendMessage(suggestion)}
+                  className="shrink-0 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-600 shadow-sm transition hover:border-zinc-300 hover:text-zinc-950"
                 >
-                  {s}
+                  {suggestion}
                 </button>
               ))}
             </div>
           </div>
         )}
 
-        <div className="border-t border-amber-900/40 bg-[#2d1810] px-4 py-4">
+        <div className="shrink-0 border-t border-zinc-200 bg-white/90 px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-xl sm:px-4 sm:py-4 sm:pb-4">
+          {reportMode && (
+            <div className="mx-auto mb-2 flex max-w-4xl items-center justify-between rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-800">
+              <span>
+                PDF mode is on. Type what report you want, then press Send.
+              </span>
+              <button
+                type="button"
+                onClick={() => setReportMode(false)}
+                className="font-semibold text-blue-900"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
           <form
-            className="mx-auto flex max-w-4xl gap-3"
+            className="mx-auto grid w-full max-w-4xl grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-1.5 sm:flex sm:gap-3"
             onSubmit={(e) => {
               e.preventDefault();
               sendMessage(input);
@@ -287,16 +524,38 @@ export default function ChatInterface() {
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about customers, items, sales orders..."
+              placeholder={
+                reportMode
+                  ? "Describe the PDF report you want..."
+                  : "Ask about customers, revenue, items..."
+              }
               disabled={loading}
-              className="flex-1 rounded-xl border border-amber-900/40 bg-[#1a0f0a] px-4 py-3 text-sm text-amber-50 placeholder:text-amber-200/30 focus:border-amber-600 focus:outline-none disabled:opacity-50"
+              className="h-12 min-w-0 rounded-full border border-zinc-200 bg-zinc-50 px-4 text-base text-zinc-950 placeholder:text-zinc-400 shadow-inner transition focus:border-zinc-300 focus:bg-white focus:outline-none focus:ring-4 focus:ring-zinc-100 disabled:opacity-50 sm:h-auto sm:flex-1 sm:px-5 sm:py-3 sm:text-sm"
             />
+            <button
+              type="button"
+              onClick={toggleReportMode}
+              disabled={loading}
+              className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full border text-xs font-semibold shadow-sm transition disabled:opacity-40 sm:h-auto sm:w-auto sm:px-5 sm:py-3 sm:text-sm ${
+                reportMode
+                  ? "border-blue-200 bg-blue-600 text-white hover:bg-blue-700"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 hover:text-zinc-950"
+              }`}
+              title="Turn on PDF report mode"
+            >
+              <span className="sm:hidden">{reportMode ? "On" : "PDF"}</span>
+              <span className="hidden sm:inline">
+                {reportMode ? "PDF Mode" : "Make PDF"}
+              </span>
+            </button>
             <button
               type="submit"
               disabled={loading || !input.trim()}
-              className="rounded-xl bg-amber-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-amber-500 disabled:opacity-40"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-zinc-950 text-lg font-semibold leading-none text-white shadow-sm transition hover:bg-zinc-800 disabled:opacity-40 sm:h-auto sm:w-auto sm:px-6 sm:py-3 sm:text-sm"
+              aria-label="Send message"
             >
-              Send
+              <span className="sm:hidden">↑</span>
+              <span className="hidden sm:inline">Send</span>
             </button>
           </form>
         </div>
@@ -315,26 +574,130 @@ function StatusPill({
   detail: string;
 }) {
   return (
-    <div className="flex items-center gap-1.5 rounded-full border border-amber-900/40 bg-[#1a0f0a] px-3 py-1">
+    <div className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-50 px-3 py-1">
       <span
         className={`h-2 w-2 rounded-full ${ok ? "bg-green-500" : "bg-red-500"}`}
       />
-      <span className="text-amber-200/80">{label}</span>
-      <span className="text-amber-200/40">· {detail}</span>
+      <span className="text-zinc-700">{label}</span>
+      <span className="text-zinc-400">- {detail}</span>
     </div>
   );
 }
 
 function MessageContent({ content }: { content: string }) {
-  const parts = content.split(/(\*\*[^*]+\*\*)/g);
+  const lines = content.split("\n");
+  const blocks: Array<{ type: "table" | "text"; lines: string[] }> = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    if (isTableStart(lines, index)) {
+      const tableLines: string[] = [];
+      while (index < lines.length && lines[index].includes("|")) {
+        tableLines.push(lines[index]);
+        index++;
+      }
+      blocks.push({ type: "table", lines: tableLines });
+      continue;
+    }
+
+    const textLines: string[] = [];
+    while (index < lines.length && !isTableStart(lines, index)) {
+      textLines.push(lines[index]);
+      index++;
+    }
+    blocks.push({ type: "text", lines: textLines });
+  }
+
+  return (
+    <div className="space-y-3">
+      {blocks.map((block, blockIndex) =>
+        block.type === "table" ? (
+          <MarkdownTable key={blockIndex} lines={block.lines} />
+        ) : (
+          <div key={blockIndex} className="whitespace-pre-wrap">
+            <InlineMarkdown text={block.lines.join("\n")} />
+          </div>
+        ),
+      )}
+    </div>
+  );
+}
+
+function isTableStart(lines: string[], index: number): boolean {
+  return (
+    lines[index]?.includes("|") &&
+    lines[index + 1]?.includes("|") &&
+    /-:?\s*\|/.test(lines[index + 1])
+  );
+}
+
+function MarkdownTable({ lines }: { lines: string[] }) {
+  const [headerLine, , ...rowLines] = lines;
+  const headers = parseTableRow(headerLine);
+  const rows = rowLines.map(parseTableRow).filter((row) => row.length > 0);
+
+  return (
+    <div className="-mx-1 overflow-x-auto rounded-xl border border-zinc-200 bg-white">
+      <table className="min-w-full text-left text-xs">
+        <thead className="bg-zinc-50 text-zinc-500">
+          <tr>
+            {headers.map((header, index) => (
+              <th key={index} className="whitespace-nowrap px-3 py-2 font-medium">
+                <InlineMarkdown text={header} />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-zinc-100">
+          {rows.map((row, rowIndex) => (
+            <tr key={rowIndex}>
+              {row.map((cell, cellIndex) => (
+                <td key={cellIndex} className="whitespace-nowrap px-3 py-2">
+                  <InlineMarkdown text={cell} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function parseTableRow(row: string): string[] {
+  return row
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  const parts = text.split(/(\*\*[^*]+\*\*|\[\[report:[^\]]+\]\])/g);
   return (
     <>
       {parts.map((part, i) => {
         if (part.startsWith("**") && part.endsWith("**")) {
           return (
-            <strong key={i} className="font-semibold text-amber-300">
+            <strong key={i} className="font-semibold text-zinc-950">
               {part.slice(2, -2)}
             </strong>
+          );
+        }
+        if (part.startsWith("[[report:") && part.endsWith("]]")) {
+          const body = part.slice("[[report:".length, -2);
+          const [id, label = "Open Report"] = body.split("|");
+          return (
+            <a
+              key={i}
+              href={`/report/${encodeURIComponent(id)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex rounded-full bg-zinc-950 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-zinc-800"
+            >
+              {label}
+            </a>
           );
         }
         return <span key={i}>{part}</span>;

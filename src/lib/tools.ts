@@ -6,9 +6,17 @@ import { bcApi } from "./bc-client";
 import {
   getMirror,
   getMirrorCache,
+  getMonthlyRevenueFromMirror,
   getUomsFromMirror,
   queueWrite,
 } from "./bc-mirror";
+import {
+  getNepaliMonthlySales,
+  getProductSales,
+  getReceivablesAging,
+  getSalesSummary,
+  searchItems,
+} from "./analytics";
 import { useSupabaseMirror } from "./config";
 
 export const toolDeclarations: FunctionDeclaration[] = [
@@ -63,6 +71,97 @@ export const toolDeclarations: FunctionDeclaration[] = [
     name: "get_api_catalog",
     description: "Get the root API catalog listing available endpoints.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
+  },
+  {
+    name: "get_monthly_revenue",
+    description:
+      "Get month-wise revenue for ONE English/Gregorian (AD) calendar year (Jan-Dec) from customer ledger invoice entries. Use for AD month questions like 'which month in 2026 had most revenue'. For TOTAL sales across all time use get_sales_summary. For Nepali (Bikram Sambat) months use get_nepali_monthly_sales.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: {
+          type: SchemaType.NUMBER,
+          description: "AD calendar year, e.g. 2026. Defaults to current year.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_sales_summary",
+    description:
+      "Get the TOTAL sales summary across ALL synced data (multiple years). Returns all-time net sales, invoice count, date range, plus a breakdown by AD year AND by Nepali fiscal year (Shrawan-Ashadh). Use this whenever the user asks for 'total sales', 'overall sales', 'sales so far', or sales by year / by fiscal year. Do NOT use a single-year tool for total sales.",
+    parameters: { type: SchemaType.OBJECT, properties: {} },
+  },
+  {
+    name: "get_nepali_monthly_sales",
+    description:
+      "Get sales by Nepali (Bikram Sambat) month for a Nepali fiscal year (Shrawan through Ashadh). Use for any Nepali-month question (Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra) or Nepali fiscal-year sales. Returns each BS month's sales and the top month.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        fiscalYearStart: {
+          type: SchemaType.NUMBER,
+          description:
+            "BS year in which the fiscal year starts at Shrawan, e.g. 2082 for FY 2082/83. Omit to use the most recent fiscal year in the data.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_receivables_aging",
+    description:
+      "Get accounts receivable aging from open customer invoices, bucketed by days past due (Not due, 1-30, 31-60, 61-90, Over 90 days). Use for overdue / outstanding / 'payment pending' / 'X days pending' / collection questions. Returns bucket totals, top overdue customers, and overdue invoice details.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        minDaysOverdue: {
+          type: SchemaType.NUMBER,
+          description:
+            "Optional. Only include invoices overdue by at least this many days, e.g. 90 for '90 days payment pending'.",
+        },
+      },
+    },
+  },
+  {
+    name: "search_items",
+    description:
+      "Search products/items by keyword across item number, name, category, and type. Use to LIST or IDENTIFY products (inventory, names, categories). For SALES AMOUNTS of a product or keyword like dip/chocolate/syrup, use get_product_sales instead.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description:
+            "Keyword to match, e.g. 'dip', 'dark choco', 'chocolate'. Omit to list categories and a sample of items.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_product_sales",
+    description:
+      "Get invoiced product sales totals from synced sales order lines. Use for questions like total sales of dip, chocolate sales this year, how much FGCH021 sold, sales by product keyword or item number. Returns total sales excl. tax, quantity invoiced, and per-item breakdown.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description:
+            "Product keyword to match item number or name, e.g. 'dip', 'chocolate', 'syrup'.",
+        },
+        year: {
+          type: SchemaType.NUMBER,
+          description:
+            "Optional AD calendar year filter on sales order posting date, e.g. 2026.",
+        },
+        itemNumbers: {
+          type: SchemaType.ARRAY,
+          items: { type: SchemaType.STRING },
+          description:
+            "Optional explicit item numbers to include, e.g. ['FGDCDIP20KG','CMCD-20KG'].",
+        },
+      },
+    },
   },
   {
     name: "create_sales_order",
@@ -253,6 +352,62 @@ export async function executeTool(
         result = useSupabaseMirror
           ? await getMirror("api_catalog")
           : await bcApi.getApiCatalog();
+        break;
+      case "get_monthly_revenue":
+        if (useSupabaseMirror) {
+          result = await getMonthlyRevenueFromMirror(
+            typeof args.year === "number" ? args.year : undefined,
+          );
+        } else {
+          return {
+            error:
+              "Monthly revenue aggregation is currently available in Supabase mirror mode.",
+          };
+        }
+        break;
+      case "get_sales_summary":
+        if (!useSupabaseMirror) {
+          return { error: "Sales summary requires Supabase mirror mode." };
+        }
+        result = await getSalesSummary();
+        break;
+      case "get_nepali_monthly_sales":
+        if (!useSupabaseMirror) {
+          return { error: "Nepali monthly sales requires Supabase mirror mode." };
+        }
+        result = await getNepaliMonthlySales(
+          typeof args.fiscalYearStart === "number"
+            ? args.fiscalYearStart
+            : undefined,
+        );
+        break;
+      case "get_receivables_aging":
+        if (!useSupabaseMirror) {
+          return { error: "Receivables aging requires Supabase mirror mode." };
+        }
+        result = await getReceivablesAging(
+          typeof args.minDaysOverdue === "number"
+            ? args.minDaysOverdue
+            : undefined,
+        );
+        break;
+      case "search_items":
+        if (!useSupabaseMirror) {
+          return { error: "Item search requires Supabase mirror mode." };
+        }
+        result = await searchItems(args.query as string | undefined);
+        break;
+      case "get_product_sales":
+        if (!useSupabaseMirror) {
+          return { error: "Product sales requires Supabase mirror mode." };
+        }
+        result = await getProductSales({
+          query: args.query as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          itemNumbers: Array.isArray(args.itemNumbers)
+            ? (args.itemNumbers as string[])
+            : undefined,
+        });
         break;
       case "create_sales_order":
         if (useSupabaseMirror) {

@@ -4,6 +4,8 @@ export type MirrorEntity =
   | "companies"
   | "customers"
   | "custLedgEntries"
+  | "salesOrders"
+  | "salesOrderLines"
   | "mr"
   | "salespersons"
   | "items"
@@ -58,6 +60,63 @@ export async function getUomsFromMirror(filter?: string): Promise<unknown> {
   return {
     value: filtered,
     _syncedAt: (raw as { _syncedAt?: string })._syncedAt,
+  };
+}
+
+type LedgerEntry = {
+  documentType?: string;
+  postingDate?: string;
+  salesLcy?: number;
+  amountLcy?: number;
+};
+
+export async function getMonthlyRevenueFromMirror(
+  year = new Date().getFullYear(),
+): Promise<unknown> {
+  const raw = (await getMirror("custLedgEntries")) as {
+    value?: LedgerEntry[];
+    error?: string;
+    _syncedAt?: string;
+  };
+  if (raw.error) return raw;
+
+  const months = Array.from({ length: 12 }, (_, index) => ({
+    month: new Date(year, index, 1).toLocaleString("en-US", { month: "long" }),
+    monthNumber: index + 1,
+    invoiceEntries: 0,
+    revenueExcludingTax: 0,
+  }));
+
+  for (const entry of raw.value ?? []) {
+    const date = entry.postingDate ? new Date(entry.postingDate) : null;
+    if (
+      entry.documentType !== "Invoice" ||
+      !date ||
+      Number.isNaN(date.getTime()) ||
+      date.getFullYear() !== year
+    ) {
+      continue;
+    }
+
+    const month = months[date.getMonth()];
+    month.invoiceEntries += 1;
+    month.revenueExcludingTax += Number(entry.salesLcy ?? entry.amountLcy ?? 0);
+  }
+
+  const topMonth = [...months].sort(
+    (a, b) => b.revenueExcludingTax - a.revenueExcludingTax,
+  )[0];
+  const totalRevenue = months.reduce(
+    (total, month) => total + month.revenueExcludingTax,
+    0,
+  );
+
+  return {
+    year,
+    totalRevenue,
+    topMonth,
+    months,
+    _syncedAt: raw._syncedAt,
   };
 }
 

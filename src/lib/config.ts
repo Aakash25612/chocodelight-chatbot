@@ -3,15 +3,15 @@ export const bcConfig = {
   apiPath: "/api/biz/customapi/v1.0",
   odataPath: "/ODataV4",
   companyId:
-    process.env.BC_COMPANY_ID ?? "000f3f5a-82f6-f011-aee5-2cea7fe9e541",
-  odataCompany: process.env.BC_ODATA_COMPANY ?? "TEST-1.21.2026 CDPL",
+    process.env.BC_COMPANY_ID ?? "058005c0-1940-ef11-aed1-2cea7fe9e541",
+  odataCompany: process.env.BC_ODATA_COMPANY ?? "Choco Delight Pvt. Ltd",
   username: process.env.BC_USERNAME ?? "klnav\\mobileapp",
   password: process.env.BC_PASSWORD ?? "",
 };
 
 export const geminiConfig = {
   apiKey: process.env.GEMINI_API_KEY ?? "",
-  model: process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
+  model: process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite",
 };
 
 /** When true, reads come from Supabase mirror; writes are queued. */
