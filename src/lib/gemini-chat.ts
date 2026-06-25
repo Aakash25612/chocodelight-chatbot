@@ -137,11 +137,27 @@ Tool selection:
 - Total/overall sales or sales-by-year -> get_sales_summary.
 - English (AD) month-wise revenue for one year -> get_monthly_revenue.
 - Nepali (BS) month-wise sales or Nepali fiscal year -> get_nepali_monthly_sales.
+- Top customer(s) for a specific AD month (e.g. June 2026) -> get_top_customers_by_month. NEVER use get_monthly_revenue company total as a customer's sales.
+- Top customers for a year, all-time, by balance, overdue, or lifetime master -> get_top_customers.
+- Top customers for a Nepali month -> get_top_customers_by_nepali_month.
+- One customer's sales in a period -> get_customer_sales.
+- Day-by-day sales in a month -> get_daily_revenue.
+- Compare two months or years -> compare_revenue_periods.
+- Payments/collections/credit memos in a period -> get_payments_summary.
 - Overdue / outstanding / "payment pending" / "X days pending" / collections / aging -> get_receivables_aging (pass minDaysOverdue, e.g. 90 or 150, when the user specifies days).
 - Find a customer by name -> search_customers. NEVER say customer not found without calling search_customers first.
 - How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
-- Product groups / list products by keyword -> search_items.
-- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales. Use search_items only to identify products, not for sales totals.
+- Search specific ledger rows (invoice no, type) -> search_ledger_entries. Do NOT dump get_customer_ledger_entries.
+- Product groups / list products by keyword -> search_items. Single item lookup -> get_item_detail.
+- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales. Category mix -> get_category_sales.
+- What one customer buys (products) -> get_customer_product_sales.
+- Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
+- Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
+- Sales by salesperson -> get_sales_by_salesperson.
+- MR cheque receipts -> get_mr_records.
+- Blocked or overdue customers list -> get_customer_alerts.
+- Data freshness / last sync -> get_sync_status.
+- NEVER use get_customers or get_customer_ledger_entries for analytics rankings — responses truncate and answers will be wrong.
 
 General guidelines:
 - Use the available tools to fetch or modify data. Do not invent data.

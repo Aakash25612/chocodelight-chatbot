@@ -19,7 +19,30 @@ import {
   searchCustomers,
   searchItems,
 } from "./analytics";
+import {
+  compareRevenuePeriods,
+  getCategorySales,
+  getCustomerAlerts,
+  getCustomerProductSales,
+  getCustomerSales,
+  getDailyRevenue,
+  getInventorySummary,
+  getItemDetail,
+  getLowStockItems,
+  getMrRecords,
+  getPaymentsSummary,
+  getSalesBySalesperson,
+  getSalesOrdersSummary,
+  getSyncStatus,
+  getTopCustomers,
+  getTopCustomersByMonth,
+  getTopCustomersByNepaliMonth,
+  searchLedgerEntries,
+  searchSalesOrders,
+} from "./analytics-queries";
 import { useSupabaseMirror } from "./config";
+
+const mirrorOnly = "Requires Supabase mirror mode (BC_DATA_SOURCE=supabase).";
 
 export const toolDeclarations: FunctionDeclaration[] = [
   {
@@ -202,6 +225,292 @@ export const toolDeclarations: FunctionDeclaration[] = [
         },
       },
     },
+  },
+  {
+    name: "get_top_customers_by_month",
+    description:
+      "Get top customers ranked by invoiced sales for ONE English (AD) calendar month. USE THIS for 'top customer in June 2026', 'best customer last month', etc. Uses customer ledger invoices (salesLcy) — NOT sales orders or company total revenue.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER, description: "AD year, e.g. 2026." },
+        month: {
+          type: SchemaType.NUMBER,
+          description: "AD month number 1-12 (June = 6).",
+        },
+        limit: {
+          type: SchemaType.NUMBER,
+          description: "How many customers to return. Default 15.",
+        },
+      },
+      required: ["year", "month"],
+    },
+  },
+  {
+    name: "get_top_customers",
+    description:
+      "Rank customers by invoice sales (ledger), balance, overdue, or lifetime master sales. Use for 'top 10 customers this year', 'biggest customers overall', 'who owes the most'. For a specific AD month use get_top_customers_by_month instead.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER, description: "Optional AD year filter." },
+        month: { type: SchemaType.NUMBER, description: "Optional AD month 1-12." },
+        limit: { type: SchemaType.NUMBER, description: "Default 15." },
+        rankBy: {
+          type: SchemaType.STRING,
+          description:
+            "invoice_sales (default), balance, overdue, or lifetime_master.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_top_customers_by_nepali_month",
+    description:
+      "Top customers by invoiced sales for one Nepali (BS) month within a fiscal year. Use for 'top customer in Jestha 2082'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        fiscalYearStart: {
+          type: SchemaType.NUMBER,
+          description: "BS year at Shrawan start, e.g. 2082 for FY 2082/83.",
+        },
+        nepaliMonth: {
+          type: SchemaType.STRING,
+          description:
+            "BS month name: Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra.",
+        },
+        limit: { type: SchemaType.NUMBER },
+      },
+      required: ["nepaliMonth"],
+    },
+  },
+  {
+    name: "get_customer_sales",
+    description:
+      "Invoice sales totals for ONE customer, optionally filtered by AD year/month, with monthly breakdown. Use for 'how much did X sell in 2026'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Customer name search." },
+        customerNo: { type: SchemaType.STRING },
+        year: { type: SchemaType.NUMBER },
+        month: { type: SchemaType.NUMBER, description: "AD month 1-12." },
+      },
+    },
+  },
+  {
+    name: "get_daily_revenue",
+    description:
+      "Day-by-day invoice revenue for one AD month. Use for 'which day in June had highest sales'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER },
+        month: { type: SchemaType.NUMBER, description: "AD month 1-12." },
+      },
+      required: ["year", "month"],
+    },
+  },
+  {
+    name: "compare_revenue_periods",
+    description:
+      "Compare invoice revenue between two AD periods (month vs month or full year vs year).",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year1: { type: SchemaType.NUMBER },
+        month1: { type: SchemaType.NUMBER, description: "Omit for full-year compare." },
+        year2: { type: SchemaType.NUMBER },
+        month2: { type: SchemaType.NUMBER },
+      },
+      required: ["year1", "year2"],
+    },
+  },
+  {
+    name: "get_payments_summary",
+    description:
+      "Payments and credit memos by period, optionally for one customer. Use for 'total collections in June', 'payments received this year'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER },
+        month: { type: SchemaType.NUMBER },
+        query: { type: SchemaType.STRING, description: "Customer name." },
+        customerNo: { type: SchemaType.STRING },
+      },
+    },
+  },
+  {
+    name: "get_inventory_summary",
+    description:
+      "Inventory overview: total stock value, counts by category, top items by stock value at cost.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        limit: { type: SchemaType.NUMBER, description: "Top items to include." },
+      },
+    },
+  },
+  {
+    name: "get_low_stock_items",
+    description:
+      "Items at or below an inventory quantity threshold. Use for stock-out / reorder questions.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        threshold: {
+          type: SchemaType.NUMBER,
+          description: "Max inventory qty to flag. Default 10.",
+        },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_category_sales",
+    description:
+      "Product category sales from synced sales order lines. Use for 'chocolate vs compound sales', category mix.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER, description: "Optional AD year filter." },
+      },
+    },
+  },
+  {
+    name: "get_sales_orders_summary",
+    description:
+      "Summary of sales orders: counts by status, top customers by order line value. NOT the same as posted ledger revenue.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER },
+        query: { type: SchemaType.STRING, description: "Filter to one customer." },
+        customerNo: { type: SchemaType.STRING },
+        status: {
+          type: SchemaType.STRING,
+          description: "Locked or Unlocked.",
+        },
+      },
+    },
+  },
+  {
+    name: "search_sales_orders",
+    description:
+      "List individual sales orders by customer, year, or status.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Customer name." },
+        customerNo: { type: SchemaType.STRING },
+        year: { type: SchemaType.NUMBER },
+        status: { type: SchemaType.STRING },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_customer_product_sales",
+    description:
+      "What products one customer bought (sales order lines). Use for 'what does X buy', 'dip sales to customer Y'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Customer name." },
+        customerNo: { type: SchemaType.STRING },
+        productQuery: {
+          type: SchemaType.STRING,
+          description: "Optional product keyword filter.",
+        },
+        year: { type: SchemaType.NUMBER },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_sales_by_salesperson",
+    description:
+      "Invoiced sales order line totals grouped by salesperson code.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        year: { type: SchemaType.NUMBER },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_mr_records",
+    description:
+      "Money receipt (MR) cheque/payment records. Search by customer or filter by year/status.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Customer name/number or MR search." },
+        customerNo: { type: SchemaType.STRING },
+        year: { type: SchemaType.NUMBER },
+        status: { type: SchemaType.STRING, description: "e.g. Cheque Cleared." },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_item_detail",
+    description:
+      "Look up one product by item number or name fragment: inventory, cost, price, category.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Item number or name fragment, e.g. FGCH018 or syrup.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_customer_alerts",
+    description:
+      "Customers who are blocked and/or have overdue balance above a threshold.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        type: {
+          type: SchemaType.STRING,
+          description: "blocked, overdue, or both (default).",
+        },
+        minOverdue: { type: SchemaType.NUMBER, description: "Minimum overdue NPR." },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "search_ledger_entries",
+    description:
+      "Search customer ledger entries by document number, customer, date, or document type. Use for specific invoice lookup — NOT for rankings.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        documentNo: { type: SchemaType.STRING },
+        query: { type: SchemaType.STRING, description: "Customer name." },
+        customerNo: { type: SchemaType.STRING },
+        year: { type: SchemaType.NUMBER },
+        month: { type: SchemaType.NUMBER },
+        documentType: {
+          type: SchemaType.STRING,
+          description: "Invoice, Payment, or Credit Memo.",
+        },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_sync_status",
+    description:
+      "When BC data was last synced to Supabase and record counts per entity. Use for data freshness questions.",
+    parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
     name: "create_sales_order",
@@ -464,6 +773,168 @@ export async function executeTool(
             ? (args.itemNumbers as string[])
             : undefined,
         });
+        break;
+      case "get_top_customers_by_month":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getTopCustomersByMonth({
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_top_customers":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getTopCustomers({
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+          rankBy: args.rankBy as
+            | "invoice_sales"
+            | "balance"
+            | "overdue"
+            | "lifetime_master"
+            | undefined,
+        });
+        break;
+      case "get_top_customers_by_nepali_month":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getTopCustomersByNepaliMonth({
+          fiscalYearStart:
+            typeof args.fiscalYearStart === "number"
+              ? args.fiscalYearStart
+              : undefined,
+          nepaliMonth: args.nepaliMonth as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_customer_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getCustomerSales({
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+        });
+        break;
+      case "get_daily_revenue":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getDailyRevenue({
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+        });
+        break;
+      case "compare_revenue_periods":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await compareRevenuePeriods({
+          year1: args.year1 as number,
+          month1: typeof args.month1 === "number" ? args.month1 : undefined,
+          year2: args.year2 as number,
+          month2: typeof args.month2 === "number" ? args.month2 : undefined,
+        });
+        break;
+      case "get_payments_summary":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getPaymentsSummary({
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+        });
+        break;
+      case "get_inventory_summary":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getInventorySummary({
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_low_stock_items":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getLowStockItems({
+          threshold:
+            typeof args.threshold === "number" ? args.threshold : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_category_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getCategorySales({
+          year: typeof args.year === "number" ? args.year : undefined,
+        });
+        break;
+      case "get_sales_orders_summary":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getSalesOrdersSummary({
+          year: typeof args.year === "number" ? args.year : undefined,
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          status: args.status as string | undefined,
+        });
+        break;
+      case "search_sales_orders":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await searchSalesOrders({
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          status: args.status as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_customer_product_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getCustomerProductSales({
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          productQuery: args.productQuery as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_sales_by_salesperson":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getSalesBySalesperson({
+          year: typeof args.year === "number" ? args.year : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_mr_records":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getMrRecords({
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          status: args.status as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_item_detail":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getItemDetail({ query: String(args.query ?? "") });
+        break;
+      case "get_customer_alerts":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getCustomerAlerts({
+          type: args.type as "blocked" | "overdue" | "both" | undefined,
+          minOverdue:
+            typeof args.minOverdue === "number" ? args.minOverdue : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "search_ledger_entries":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await searchLedgerEntries({
+          documentNo: args.documentNo as string | undefined,
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
+          year: typeof args.year === "number" ? args.year : undefined,
+          month: typeof args.month === "number" ? args.month : undefined,
+          documentType: args.documentType as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_sync_status":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getSyncStatus();
         break;
       case "create_sales_order":
         if (useSupabaseMirror) {
