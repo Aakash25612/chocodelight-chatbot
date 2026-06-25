@@ -41,8 +41,58 @@ import {
   searchSalesOrders,
 } from "./analytics-queries";
 import { useSupabaseMirror } from "./config";
+import { type DatePeriodInput } from "./date-period";
 
 const mirrorOnly = "Requires Supabase mirror mode (BC_DATA_SOURCE=supabase).";
+
+const periodToolProperties = {
+  year: {
+    type: SchemaType.NUMBER,
+    description: "AD calendar year filter.",
+  },
+  month: {
+    type: SchemaType.NUMBER,
+    description: "AD month 1-12 (use with year for June: month=6).",
+  },
+  week: {
+    type: SchemaType.NUMBER,
+    description: "ISO week 1-53 (requires year).",
+  },
+  day: {
+    type: SchemaType.NUMBER,
+    description: "Day of month 1-31 (use with year+month).",
+  },
+  dateFrom: {
+    type: SchemaType.STRING,
+    description: "Inclusive start date YYYY-MM-DD.",
+  },
+  dateTo: {
+    type: SchemaType.STRING,
+    description: "Inclusive end date YYYY-MM-DD.",
+  },
+  nepaliMonth: {
+    type: SchemaType.STRING,
+    description: "BS month name, e.g. Jestha (requires fiscalYearStart).",
+  },
+  fiscalYearStart: {
+    type: SchemaType.NUMBER,
+    description: "BS fiscal year start at Shrawan, e.g. 2082.",
+  },
+} as const;
+
+function periodArgs(args: Record<string, unknown>): DatePeriodInput {
+  return {
+    year: typeof args.year === "number" ? args.year : undefined,
+    month: typeof args.month === "number" ? args.month : undefined,
+    week: typeof args.week === "number" ? args.week : undefined,
+    day: typeof args.day === "number" ? args.day : undefined,
+    dateFrom: args.dateFrom as string | undefined,
+    dateTo: args.dateTo as string | undefined,
+    nepaliMonth: args.nepaliMonth as string | undefined,
+    fiscalYearStart:
+      typeof args.fiscalYearStart === "number" ? args.fiscalYearStart : undefined,
+  };
+}
 
 export const toolDeclarations: FunctionDeclaration[] = [
   {
@@ -203,7 +253,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales totals from synced sales order lines. Use for questions like total sales of dip, chocolate sales this year, how much FGCH021 sold, sales by product keyword or item number. Returns total sales excl. tax, quantity invoiced, and per-item breakdown.",
+      "Get invoiced product sales totals from synced sales order lines. Use for product/keyword sales with ANY date filter: year, month, week, dateFrom/dateTo, or Nepali month. For one customer's purchases use get_customer_product_sales.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -212,17 +262,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description:
             "Product keyword to match item number or name, e.g. 'dip', 'chocolate', 'syrup'.",
         },
-        year: {
-          type: SchemaType.NUMBER,
-          description:
-            "Optional AD calendar year filter on sales order posting date, e.g. 2026.",
-        },
         itemNumbers: {
           type: SchemaType.ARRAY,
           items: { type: SchemaType.STRING },
           description:
             "Optional explicit item numbers to include, e.g. ['FGDCDIP20KG','CMCD-20KG'].",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -370,50 +416,48 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_category_sales",
     description:
-      "Product category sales from synced sales order lines. Use for 'chocolate vs compound sales', category mix.",
+      "Product category sales from synced sales order lines. Supports year/month/week/date range/Nepali month filters.",
     parameters: {
       type: SchemaType.OBJECT,
-      properties: {
-        year: { type: SchemaType.NUMBER, description: "Optional AD year filter." },
-      },
+      properties: { ...periodToolProperties },
     },
   },
   {
     name: "get_sales_orders_summary",
     description:
-      "Summary of sales orders: counts by status, top customers by order line value. NOT the same as posted ledger revenue.",
+      "Summary of sales orders: counts by status, top customers by order line value. Supports flexible date filters.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
-        year: { type: SchemaType.NUMBER },
         query: { type: SchemaType.STRING, description: "Filter to one customer." },
         customerNo: { type: SchemaType.STRING },
         status: {
           type: SchemaType.STRING,
           description: "Locked or Unlocked.",
         },
+        ...periodToolProperties,
       },
     },
   },
   {
     name: "search_sales_orders",
     description:
-      "List individual sales orders by customer, year, or status.",
+      "List individual sales orders by customer, status, and date period (month/week/range).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         query: { type: SchemaType.STRING, description: "Customer name." },
         customerNo: { type: SchemaType.STRING },
-        year: { type: SchemaType.NUMBER },
         status: { type: SchemaType.STRING },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
       },
     },
   },
   {
     name: "get_customer_product_sales",
     description:
-      "What products one customer bought (sales order lines). Use for 'what does X buy', 'dip sales to customer Y'.",
+      "What products ONE customer bought in a specific period. USE THIS for 'what did Bhatbhateni buy in June' — pass query + year + month (June=6), or dateFrom/dateTo, or week. Returns item lines for ONLY that window, not year-to-date.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -423,20 +467,20 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.STRING,
           description: "Optional product keyword filter.",
         },
-        year: { type: SchemaType.NUMBER },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
       },
     },
   },
   {
     name: "get_sales_by_salesperson",
     description:
-      "Invoiced sales order line totals grouped by salesperson code.",
+      "Invoiced sales order line totals grouped by salesperson code. Supports date period filters.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
-        year: { type: SchemaType.NUMBER },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
       },
     },
   },
@@ -768,10 +812,10 @@ export async function executeTool(
         }
         result = await getProductSales({
           query: args.query as string | undefined,
-          year: typeof args.year === "number" ? args.year : undefined,
           itemNumbers: Array.isArray(args.itemNumbers)
             ? (args.itemNumbers as string[])
             : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_top_customers_by_month":
@@ -857,17 +901,15 @@ export async function executeTool(
         break;
       case "get_category_sales":
         if (!useSupabaseMirror) return { error: mirrorOnly };
-        result = await getCategorySales({
-          year: typeof args.year === "number" ? args.year : undefined,
-        });
+        result = await getCategorySales(periodArgs(args));
         break;
       case "get_sales_orders_summary":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getSalesOrdersSummary({
-          year: typeof args.year === "number" ? args.year : undefined,
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
           status: args.status as string | undefined,
+          ...periodArgs(args),
         });
         break;
       case "search_sales_orders":
@@ -875,9 +917,9 @@ export async function executeTool(
         result = await searchSalesOrders({
           query: args.query as string | undefined,
           customerNo: args.customerNo as string | undefined,
-          year: typeof args.year === "number" ? args.year : undefined,
           status: args.status as string | undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_customer_product_sales":
@@ -886,15 +928,15 @@ export async function executeTool(
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
           productQuery: args.productQuery as string | undefined,
-          year: typeof args.year === "number" ? args.year : undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_sales_by_salesperson":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getSalesBySalesperson({
-          year: typeof args.year === "number" ? args.year : undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_mr_records":

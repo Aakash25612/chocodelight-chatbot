@@ -1,5 +1,6 @@
 import { getMirror } from "./bc-mirror";
 import { formatAmount } from "./format";
+import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -603,11 +604,16 @@ type SalesOrderLine = {
  * BC does not expose posted invoice lines in this API; invoiced quantities on
  * sales order lines are the best available source (from ~Jul 2024 onward).
  */
-export async function getProductSales(input?: {
-  query?: string;
-  year?: number;
-  itemNumbers?: string[];
-}): Promise<unknown> {
+export async function getProductSales(
+  input?: {
+    query?: string;
+    itemNumbers?: string[];
+  } & DatePeriodInput,
+): Promise<unknown> {
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
   const [linesPayload, ordersPayload, itemsPayload] = await Promise.all([
     getMirror("salesOrderLines") as Promise<MirrorPayload<SalesOrderLine>>,
     getMirror("salesOrders") as Promise<MirrorPayload<SalesOrder>>,
@@ -631,7 +637,6 @@ export async function getProductSales(input?: {
 
   const query = (input?.query ?? "").trim().toLowerCase();
   const explicitItems = (input?.itemNumbers ?? []).map((n) => n.toUpperCase());
-  const year = input?.year;
 
   function matchesItem(itemNo: string): boolean {
     if (explicitItems.length > 0) {
@@ -677,10 +682,7 @@ export async function getProductSales(input?: {
     if (!itemNo || !matchesItem(itemNo)) continue;
 
     const postingDate = orderDates.get(String(line.docNo ?? ""));
-    if (year && postingDate) {
-      const lineYear = new Date(postingDate).getFullYear();
-      if (lineYear !== year) continue;
-    }
+    if (!postingDate || !period.matches(postingDate)) continue;
 
     const unitPrice = Number(line.unitPrice ?? 0);
     const lineSales = qtyInvoiced * unitPrice;
@@ -721,7 +723,7 @@ export async function getProductSales(input?: {
   return {
     currency: "NPR",
     query: query || null,
-    year: year ?? null,
+    period: period.label,
     itemNumbers: explicitItems.length ? explicitItems : null,
     basis:
       "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. Posted invoice line API is not exposed; this covers synced sales orders only.",

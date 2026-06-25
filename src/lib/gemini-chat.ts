@@ -127,7 +127,8 @@ Nepal context (IMPORTANT):
 - The company is in Nepal and uses the Bikram Sambat (BS) calendar alongside the Gregorian (AD) calendar.
 - BS months in order: Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra.
 - The Nepali fiscal year runs from Shrawan 1 to Ashadh (Asar) end, labelled like "2082/83".
-- If the user names a Nepali month or a Nepali fiscal year, answer using BS via get_nepali_monthly_sales. If they name an English month or AD year, use get_monthly_revenue.
+- If the user names a Nepali month or a Nepali fiscal year, answer using BS via get_nepali_monthly_sales or pass nepaliMonth + fiscalYearStart on sales-order tools.
+- Date filters on sales/product tools: year, month (1-12), week (ISO, needs year), day (needs year+month), dateFrom/dateTo (YYYY-MM-DD), or nepaliMonth + fiscalYearStart. When user says "June 2026" pass year=2026 and month=6.
 
 Data scope (IMPORTANT):
 - Synced data spans MULTIPLE years (not just the current year). Never assume the current year only.
@@ -149,8 +150,8 @@ Tool selection:
 - How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
 - Search specific ledger rows (invoice no, type) -> search_ledger_entries. Do NOT dump get_customer_ledger_entries.
 - Product groups / list products by keyword -> search_items. Single item lookup -> get_item_detail.
-- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales. Category mix -> get_category_sales.
-- What one customer buys (products) -> get_customer_product_sales.
+- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales with date filters. Category mix -> get_category_sales.
+- What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
 - Sales by salesperson -> get_sales_by_salesperson.

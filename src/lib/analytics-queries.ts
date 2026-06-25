@@ -1,5 +1,6 @@
 import { getMirror, getSyncStatus } from "./bc-mirror";
 import { searchCustomers } from "./analytics";
+import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -816,9 +817,13 @@ export async function getLowStockItems(input?: {
 }
 
 /** Product category sales from synced sales order lines. */
-export async function getCategorySales(input?: {
-  year?: number;
-}): Promise<unknown> {
+export async function getCategorySales(
+  input?: DatePeriodInput,
+): Promise<unknown> {
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
   const [linesPayload, ordersPayload, itemsPayload] = await Promise.all([
     loadSalesOrderLines(),
     loadSalesOrders(),
@@ -849,9 +854,7 @@ export async function getCategorySales(input?: {
     const qty = Number(line.quantityInvoiced ?? 0);
     if (qty <= 0) continue;
     const postingDate = orderDates.get(String(line.docNo ?? ""));
-    if (input?.year && postingDate) {
-      if (new Date(postingDate).getFullYear() !== input.year) continue;
-    }
+    if (!postingDate || !period.matches(postingDate)) continue;
     const itemNo = String(line.itemNo ?? "");
     const category = itemMeta.get(itemNo)?.itemCategory ?? "(unknown)";
     const sales = qty * Number(line.unitPrice ?? 0);
@@ -875,7 +878,7 @@ export async function getCategorySales(input?: {
 
   return {
     currency: "NPR",
-    year: input?.year ?? null,
+    period: period.label,
     basis:
       "Sales order lines (quantityInvoiced × unitPrice). Partial history from ~Jul 2024.",
     totalSalesExcludingTax: round(totalSales),
@@ -885,18 +888,23 @@ export async function getCategorySales(input?: {
 }
 
 /** Sales orders summary — counts, status, top customers by order value. */
-export async function getSalesOrdersSummary(input?: {
-  year?: number;
-  customerNo?: string;
-  query?: string;
-  status?: string;
-}): Promise<unknown> {
+export async function getSalesOrdersSummary(
+  input?: {
+    customerNo?: string;
+    query?: string;
+    status?: string;
+  } & DatePeriodInput,
+): Promise<unknown> {
   let customerNo = input?.customerNo;
   if (!customerNo && input?.query) {
     const resolved = await resolveCustomerNo({ query: input.query });
     if ("error" in resolved) return resolved;
     customerNo = resolved.customerNo;
   }
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
 
   const [ordersPayload, linesPayload, names] = await Promise.all([
     loadSalesOrders(),
@@ -924,8 +932,7 @@ export async function getSalesOrdersSummary(input?: {
   let totalValue = 0;
 
   for (const order of ordersPayload.value ?? []) {
-    const date = parseDate(order.postingDate);
-    if (input?.year && date && date.getFullYear() !== input.year) continue;
+    if (!order.postingDate || !period.matches(order.postingDate)) continue;
     if (customerNo && order.customerNumber !== customerNo) continue;
     if (
       input?.status &&
@@ -953,6 +960,7 @@ export async function getSalesOrdersSummary(input?: {
 
   return {
     currency: "NPR",
+    period: period.label,
     matchedOrders,
     totalOrderLineValue: round(totalValue),
     byStatus: Object.fromEntries(byStatus),
@@ -966,13 +974,14 @@ export async function getSalesOrdersSummary(input?: {
 }
 
 /** Search/list sales orders by customer, year, or status. */
-export async function searchSalesOrders(input?: {
-  query?: string;
-  customerNo?: string;
-  year?: number;
-  status?: string;
-  limit?: number;
-}): Promise<unknown> {
+export async function searchSalesOrders(
+  input?: {
+    query?: string;
+    customerNo?: string;
+    status?: string;
+    limit?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 20, 50);
   let customerNo = input?.customerNo;
   if (!customerNo && input?.query) {
@@ -980,6 +989,10 @@ export async function searchSalesOrders(input?: {
     if ("error" in resolved) return resolved;
     customerNo = resolved.customerNo;
   }
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
 
   const [ordersPayload, names] = await Promise.all([
     loadSalesOrders(),
@@ -989,8 +1002,7 @@ export async function searchSalesOrders(input?: {
 
   const matches = (ordersPayload.value ?? [])
     .filter((order) => {
-      const date = parseDate(order.postingDate);
-      if (input?.year && date && date.getFullYear() !== input.year) return false;
+      if (!order.postingDate || !period.matches(order.postingDate)) return false;
       if (customerNo && order.customerNumber !== customerNo) return false;
       if (
         input?.status &&
@@ -1014,22 +1026,28 @@ export async function searchSalesOrders(input?: {
 
   return {
     matchCount: matches.length,
+    period: period.label,
     orders: matches,
     _syncedAt: ordersPayload._syncedAt,
   };
 }
 
 /** Product sales for one customer from sales order lines. */
-export async function getCustomerProductSales(input?: {
-  customerNo?: string;
-  query?: string;
-  productQuery?: string;
-  year?: number;
-  limit?: number;
-}): Promise<unknown> {
-  const limit = Math.min(input?.limit ?? 20, 50);
+export async function getCustomerProductSales(
+  input?: {
+    customerNo?: string;
+    query?: string;
+    productQuery?: string;
+    limit?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
+  const limit = Math.min(input?.limit ?? 30, 100);
   const resolved = await resolveCustomerNo(input);
   if ("error" in resolved) return resolved;
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
 
   const [ordersPayload, linesPayload, itemsPayload] = await Promise.all([
     loadSalesOrders(),
@@ -1042,7 +1060,8 @@ export async function getCustomerProductSales(input?: {
   const customerOrders = new Map<string, string>();
   for (const order of ordersPayload.value ?? []) {
     if (order.customerNumber !== resolved.customerNo || !order.number) continue;
-    if (order.postingDate) customerOrders.set(order.number, order.postingDate);
+    if (!order.postingDate || !period.matches(order.postingDate)) continue;
+    customerOrders.set(order.number, order.postingDate);
   }
 
   const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
@@ -1053,17 +1072,23 @@ export async function getCustomerProductSales(input?: {
 
   const byItem = new Map<
     string,
-    { itemNo: string; name: string; sales: number; quantity: number }
+    {
+      itemNo: string;
+      name: string;
+      sales: number;
+      quantity: number;
+      orderCount: number;
+      orders: Set<string>;
+    }
   >();
   let totalSales = 0;
+  let totalQuantity = 0;
+  let matchedLineCount = 0;
 
   for (const line of linesPayload.value ?? []) {
     const docNo = String(line.docNo ?? "");
     const postingDate = customerOrders.get(docNo);
     if (!postingDate) continue;
-    if (input?.year && new Date(postingDate).getFullYear() !== input.year) {
-      continue;
-    }
 
     const qty = Number(line.quantityInvoiced ?? 0);
     if (qty <= 0) continue;
@@ -1079,9 +1104,23 @@ export async function getCustomerProductSales(input?: {
 
     const sales = qty * Number(line.unitPrice ?? 0);
     totalSales += sales;
+    totalQuantity += qty;
+    matchedLineCount += 1;
+
     const agg =
       byItem.get(itemNo) ??
-      { itemNo, name: meta?.displayName ?? "", sales: 0, quantity: 0 };
+      {
+        itemNo,
+        name: meta?.displayName ?? "",
+        sales: 0,
+        quantity: 0,
+        orderCount: 0,
+        orders: new Set<string>(),
+      };
+    if (!agg.orders.has(docNo)) {
+      agg.orders.add(docNo);
+      agg.orderCount = agg.orders.size;
+    }
     agg.sales += sales;
     agg.quantity += qty;
     byItem.set(itemNo, agg);
@@ -1089,33 +1128,61 @@ export async function getCustomerProductSales(input?: {
 
   const items = [...byItem.values()]
     .map((row) => ({
-      ...row,
+      itemNo: row.itemNo,
+      name: row.name,
       salesExcludingTax: round(row.sales),
       quantityInvoiced: round(row.quantity),
+      orderCount: row.orderCount,
     }))
     .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
     .slice(0, limit);
+
+  const orderList = [...customerOrders.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .map(([orderNo, postingDate]) => ({ orderNo, postingDate }));
+
+  if (items.length === 0 && customerOrders.size === 0) {
+    return {
+      currency: "NPR",
+      customerNo: resolved.customerNo,
+      name: resolved.name,
+      period: period.label,
+      productQuery: productTerm || null,
+      message:
+        "No invoiced sales order lines matched this customer and date filter.",
+      ordersInPeriod: [],
+      items: [],
+      _syncedAt: linesPayload._syncedAt,
+    };
+  }
 
   return {
     currency: "NPR",
     customerNo: resolved.customerNo,
     name: resolved.name,
-    year: input?.year ?? null,
+    period: period.label,
     productQuery: productTerm || null,
     basis:
-      "Customer's synced sales order lines (quantityInvoiced × unitPrice).",
+      "Customer sales order lines in the filtered posting-date window (quantityInvoiced × unitPrice).",
+    orderCount: customerOrders.size,
+    ordersInPeriod: orderList.slice(0, 30),
     totalSalesExcludingTax: round(totalSales),
+    totalQuantityInvoiced: round(totalQuantity),
+    matchedLineCount,
     items,
     _syncedAt: linesPayload._syncedAt,
   };
 }
 
 /** Invoiced product sales grouped by salesperson code on sales orders. */
-export async function getSalesBySalesperson(input?: {
-  year?: number;
-  limit?: number;
-}): Promise<unknown> {
+export async function getSalesBySalesperson(
+  input?: { limit?: number } & DatePeriodInput,
+): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 20, 50);
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
   const [ordersPayload, linesPayload, salespersonsPayload] = await Promise.all([
     loadSalesOrders(),
     loadSalesOrderLines(),
@@ -1150,10 +1217,7 @@ export async function getSalesBySalesperson(input?: {
     const qty = Number(line.quantityInvoiced ?? 0);
     if (qty <= 0) continue;
     const meta = orderMeta.get(String(line.docNo ?? ""));
-    if (!meta) continue;
-    if (input?.year && meta.postingDate) {
-      if (new Date(meta.postingDate).getFullYear() !== input.year) continue;
-    }
+    if (!meta?.postingDate || !period.matches(meta.postingDate)) continue;
     const code = meta.salesperson ?? "(none)";
     const sales = qty * Number(line.unitPrice ?? 0);
     totalSales += sales;
@@ -1167,7 +1231,7 @@ export async function getSalesBySalesperson(input?: {
 
   return {
     currency: "NPR",
-    year: input?.year ?? null,
+    period: period.label,
     basis: "Sales order lines grouped by order.salesperson.",
     totalSalesExcludingTax: round(totalSales),
     salespersons: [...bySp.values()]
