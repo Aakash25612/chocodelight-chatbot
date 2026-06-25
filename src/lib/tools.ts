@@ -14,7 +14,9 @@ import {
   getNepaliMonthlySales,
   getProductSales,
   getReceivablesAging,
+  getCustomerStatement,
   getSalesSummary,
+  searchCustomers,
   searchItems,
 } from "./analytics";
 import { useSupabaseMirror } from "./config";
@@ -28,13 +30,51 @@ export const toolDeclarations: FunctionDeclaration[] = [
   },
   {
     name: "get_customers",
-    description: "Get all customers for the configured company.",
+    description:
+      "Get ALL customers (large list). Do NOT use for name lookup — use search_customers instead. Only use when the user explicitly wants the full customer dump.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
+  },
+  {
+    name: "search_customers",
+    description:
+      "Search customers by name, customer number, or phone. Use FIRST whenever the user mentions a customer by name (e.g. P. D. Traders, Bitran Solutions) or asks who a customer is.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Customer name or number fragment, e.g. 'P. D. Traders' or 'ACP0000307'.",
+        },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "get_customer_statement",
+    description:
+      "Get a customer's invoiced vs paid summary, open balance, overdue invoices, and recent payments. Use for 'how much has X paid', payment history, outstanding balance for one customer, or follow-up after receivables aging. Pass query (name), customerNo, and/or documentNo from a prior invoice.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Customer name search, e.g. 'P. D. Traders'.",
+        },
+        customerNo: {
+          type: SchemaType.STRING,
+          description: "Customer number if known, e.g. ACP0000307.",
+        },
+        documentNo: {
+          type: SchemaType.STRING,
+          description: "Invoice/document number if known, e.g. W_CDP_SB82/83-00165.",
+        },
+      },
+    },
   },
   {
     name: "get_customer_ledger_entries",
     description:
-      "Get customer ledger entries (custLedgEntries) for the configured company.",
+      "Get ALL customer ledger entries (very large). Do NOT use for one customer — use get_customer_statement instead.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
@@ -322,6 +362,22 @@ export async function executeTool(
         result = useSupabaseMirror
           ? await getMirror("customers")
           : await bcApi.getCustomers();
+        break;
+      case "search_customers":
+        if (!useSupabaseMirror) {
+          return { error: "Customer search requires Supabase mirror mode." };
+        }
+        result = await searchCustomers(String(args.query ?? ""));
+        break;
+      case "get_customer_statement":
+        if (!useSupabaseMirror) {
+          return { error: "Customer statement requires Supabase mirror mode." };
+        }
+        result = await getCustomerStatement({
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          documentNo: args.documentNo as string | undefined,
+        });
         break;
       case "get_customer_ledger_entries":
         result = useSupabaseMirror

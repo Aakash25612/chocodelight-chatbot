@@ -1,4 +1,5 @@
 import { getMirror } from "./bc-mirror";
+import { formatAmount } from "./format";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -249,6 +250,223 @@ export async function getReceivablesAging(
     ),
     overdueEntries: overdueEntries.slice(0, 50),
     topOverdueCustomers,
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Find customers by name, number, or phone. Use instead of dumping all customers.
+ */
+export async function searchCustomers(query: string): Promise<unknown> {
+  const payload = (await getMirror("customers")) as MirrorPayload<Customer>;
+  if (payload.error) return { error: payload.error };
+
+  const term = normalizeSearchText(query);
+  if (!term) return { error: "Search query required." };
+
+  const matches = (payload.value ?? [])
+    .map((customer) => {
+      const fields = [
+        customer.number ?? "",
+        customer.displayName ?? "",
+        customer.phoneNumber ?? "",
+      ];
+      const normalized = normalizeSearchText(fields.join(" "));
+      let score = 0;
+      if (normalizeSearchText(customer.displayName ?? "") === term) score = 100;
+      else if (normalizeSearchText(customer.number ?? "") === term) score = 95;
+      else if (normalized.startsWith(term)) score = 80;
+      else if (fields.some((field) => normalizeSearchText(field).includes(term)))
+        score = 60;
+      else if (normalized.includes(term)) score = 40;
+      return { customer, score };
+    })
+    .filter((row) => row.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  const results = matches.slice(0, 15).map(({ customer, score }) => ({
+    customerNo: customer.number,
+    name: customer.displayName,
+    phone: customer.phoneNumber,
+    balance: round(Number(customer.balance ?? 0)),
+    overdueAmount: round(Number(customer.overdueAmount ?? 0)),
+    matchScore: score,
+  }));
+
+  return {
+    query,
+    matchCount: matches.length,
+    customers: results,
+    _syncedAt: payload._syncedAt,
+  };
+}
+
+/**
+ * Customer payment / invoice statement from ledger entries.
+ * Resolve by customerNo, customer name search, or a known document number.
+ */
+export async function getCustomerStatement(input?: {
+  customerNo?: string;
+  query?: string;
+  documentNo?: string;
+}): Promise<unknown> {
+  const [ledgerPayload, customersPayload] = await Promise.all([
+    loadLedger(),
+    getMirror("customers") as Promise<MirrorPayload<Customer>>,
+  ]);
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const customers = customersPayload.value ?? [];
+  const customerByNo = new Map(
+    customers.filter((c) => c.number).map((c) => [c.number!, c]),
+  );
+
+  let customerNo = input?.customerNo?.trim();
+  let customer = customerNo ? customerByNo.get(customerNo) : undefined;
+
+  if (!customer && input?.documentNo) {
+    const doc = input.documentNo.trim();
+    const docEntry = (ledgerPayload.value ?? []).find(
+      (entry) => entry.documentNo === doc,
+    );
+    customerNo = docEntry?.customerNo ?? docEntry?.sellToCustomerNo;
+    customer = customerNo ? customerByNo.get(customerNo) : undefined;
+  }
+
+  if (!customer && input?.query) {
+    const search = (await searchCustomers(input.query)) as {
+      customers?: Array<{
+        customerNo?: string;
+        name?: string;
+        matchScore?: number;
+      }>;
+      matchCount?: number;
+    };
+    const top = search.customers ?? [];
+    if (top.length === 0) {
+      return {
+        error: `No customer found matching "${input.query}". Try a shorter name or customer number.`,
+      };
+    }
+    if (top.length > 1 && top[0].matchScore === top[1].matchScore) {
+      return {
+        error: "Multiple customers matched. Please specify customer number.",
+        candidates: top.slice(0, 5),
+      };
+    }
+    customerNo = top[0].customerNo;
+    customer = customerNo ? customerByNo.get(customerNo) : undefined;
+  }
+
+  if (!customerNo || !customer) {
+    return {
+      error:
+        "Customer not found. Pass customerNo, query (name), or documentNo from an invoice.",
+    };
+  }
+
+  const entries = (ledgerPayload.value ?? [])
+    .filter(
+      (entry) =>
+        entry.customerNo === customerNo || entry.sellToCustomerNo === customerNo,
+    )
+    .sort((a, b) =>
+      String(b.postingDate ?? "").localeCompare(String(a.postingDate ?? "")),
+    );
+
+  let totalInvoiced = 0;
+  let totalPaid = 0;
+  let totalCreditMemos = 0;
+  let openBalance = 0;
+  let overdueBalance = 0;
+  const now = new Date();
+
+  const invoices: Array<Record<string, unknown>> = [];
+  const payments: Array<Record<string, unknown>> = [];
+  const openInvoices: Array<Record<string, unknown>> = [];
+
+  for (const entry of entries) {
+    const amount = Number(entry.amountLcy ?? entry.salesLcy ?? 0);
+    const remaining = Number(entry.remainingAmount ?? 0);
+
+    if (entry.documentType === "Invoice") {
+      totalInvoiced += Number(entry.salesLcy ?? Math.max(amount, 0));
+      invoices.push({
+        documentNo: entry.documentNo,
+        postingDate: entry.postingDate,
+        dueDate: entry.dueDate,
+        amount: round(Number(entry.salesLcy ?? amount)),
+        remaining: round(remaining),
+        open: !!entry.open,
+      });
+      if (entry.open && remaining > 0) {
+        const due = parseDate(entry.dueDate);
+        const daysOverdue = due
+          ? Math.floor((now.getTime() - due.getTime()) / 86400000)
+          : 0;
+        openBalance += remaining;
+        if (daysOverdue > 0) overdueBalance += remaining;
+        openInvoices.push({
+          documentNo: entry.documentNo,
+          dueDate: entry.dueDate,
+          daysOverdue: Math.max(daysOverdue, 0),
+          remaining: round(remaining),
+        });
+      }
+    } else if (entry.documentType === "Payment") {
+      totalPaid += Math.abs(amount);
+      payments.push({
+        documentNo: entry.documentNo,
+        postingDate: entry.postingDate,
+        amount: round(Math.abs(amount)),
+        description: entry.description ?? "",
+      });
+    } else if (entry.documentType === "Credit Memo") {
+      totalCreditMemos += Math.abs(amount);
+      payments.push({
+        documentNo: entry.documentNo,
+        postingDate: entry.postingDate,
+        amount: round(Math.abs(amount)),
+        description: entry.description ?? "Credit Memo",
+        type: "Credit Memo",
+      });
+    }
+  }
+
+  openInvoices.sort((a, b) => Number(b.daysOverdue) - Number(a.daysOverdue));
+
+  return {
+    currency: "NPR",
+    customerNo,
+    name: customer.displayName,
+    phone: customer.phoneNumber,
+    masterBalance: round(Number(customer.balance ?? 0)),
+    masterOverdue: round(Number(customer.overdueAmount ?? 0)),
+    summary: {
+      totalInvoiced: round(totalInvoiced),
+      totalPaid: round(totalPaid),
+      totalCreditMemos: round(totalCreditMemos),
+      netCollected: round(totalPaid + totalCreditMemos),
+      openBalance: round(openBalance),
+      overdueBalance: round(overdueBalance),
+      invoiceCount: invoices.length,
+      paymentCount: payments.filter((p) => p.type !== "Credit Memo").length,
+    },
+    summaryFormatted: {
+      totalInvoiced: formatAmount(totalInvoiced),
+      totalPaid: formatAmount(totalPaid),
+      totalCreditMemos: formatAmount(totalCreditMemos),
+      netCollected: formatAmount(totalPaid + totalCreditMemos),
+      openBalance: formatAmount(openBalance),
+      overdueBalance: formatAmount(overdueBalance),
+    },
+    openInvoices: openInvoices.slice(0, 20),
+    recentPayments: payments.slice(0, 20),
+    recentInvoices: invoices.slice(0, 20),
     _syncedAt: ledgerPayload._syncedAt,
   };
 }

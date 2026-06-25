@@ -137,7 +137,9 @@ Tool selection:
 - Total/overall sales or sales-by-year -> get_sales_summary.
 - English (AD) month-wise revenue for one year -> get_monthly_revenue.
 - Nepali (BS) month-wise sales or Nepali fiscal year -> get_nepali_monthly_sales.
-- Overdue / outstanding / "payment pending" / "X days pending" / collections / aging -> get_receivables_aging (pass minDaysOverdue, e.g. 90, when the user specifies days).
+- Overdue / outstanding / "payment pending" / "X days pending" / collections / aging -> get_receivables_aging (pass minDaysOverdue, e.g. 90 or 150, when the user specifies days).
+- Find a customer by name -> search_customers. NEVER say customer not found without calling search_customers first.
+- How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
 - Product groups / list products by keyword -> search_items.
 - Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales. Use search_items only to identify products, not for sales totals.
 
