@@ -279,6 +279,59 @@ export async function getTopCustomersByMonth(input?: {
   };
 }
 
+/** Outstanding receivables ranked by total balance with overdue vs not-yet-due split. */
+export async function getOutstandingReceivables(input?: {
+  limit?: number;
+}): Promise<unknown> {
+  const limit = Math.min(input?.limit ?? 15, 50);
+  const customersPayload = await loadCustomers();
+  if (customersPayload.error) return { error: customersPayload.error };
+
+  const ranked = (customersPayload.value ?? [])
+    .map((customer) => {
+      const balance = round(Number(customer.balance ?? 0));
+      const overdueAmount = round(Number(customer.overdueAmount ?? 0));
+      return {
+        customerNo: customer.number,
+        name: customer.displayName,
+        balance,
+        overdueAmount,
+        notYetDueAmount: round(Math.max(0, balance - overdueAmount)),
+      };
+    })
+    .filter((row) => row.balance > 0)
+    .sort((a, b) => b.balance - a.balance);
+
+  const totalOutstanding = round(
+    ranked.reduce((sum, row) => sum + row.balance, 0),
+  );
+  const totalOverdue = round(
+    ranked.reduce((sum, row) => sum + row.overdueAmount, 0),
+  );
+  const totalNotYetDue = round(
+    ranked.reduce((sum, row) => sum + row.notYetDueAmount, 0),
+  );
+
+  return {
+    currency: "NPR",
+    asOf: new Date().toISOString().slice(0, 10),
+    rankBy: "balance",
+    basis:
+      "Customer master balance (matches ERP/Power BI outstanding report). overdueAmount = past due; notYetDueAmount = owed but payment deadline not reached.",
+    totals: { totalOutstanding, totalOverdue, totalNotYetDue },
+    customerCount: ranked.length,
+    customers: ranked.slice(0, limit).map((row, index) => ({
+      rank: index + 1,
+      ...row,
+      percentOfTotal:
+        totalOutstanding > 0
+          ? Math.round((row.balance / totalOutstanding) * 1000) / 10
+          : 0,
+    })),
+    _syncedAt: customersPayload._syncedAt,
+  };
+}
+
 /** Top customers with flexible period and ranking. */
 export async function getTopCustomers(input?: {
   year?: number;
@@ -303,15 +356,20 @@ export async function getTopCustomers(input?: {
 
   if (rankBy === "balance" || rankBy === "overdue" || rankBy === "lifetime_master") {
     const rows = (customersPayload.value ?? [])
-      .map((customer) => ({
-        customerNo: customer.number,
-        name: customer.displayName,
-        balance: round(Number(customer.balance ?? 0)),
-        overdueAmount: round(Number(customer.overdueAmount ?? 0)),
-        lifetimeSalesExcludingTax: round(
-          Number(customer.totalSalesExcludingTax ?? 0),
-        ),
-      }))
+      .map((customer) => {
+        const balance = round(Number(customer.balance ?? 0));
+        const overdueAmount = round(Number(customer.overdueAmount ?? 0));
+        return {
+          customerNo: customer.number,
+          name: customer.displayName,
+          balance,
+          overdueAmount,
+          notYetDueAmount: round(Math.max(0, balance - overdueAmount)),
+          lifetimeSalesExcludingTax: round(
+            Number(customer.totalSalesExcludingTax ?? 0),
+          ),
+        };
+      })
       .sort((a, b) => {
         if (rankBy === "balance") return b.balance - a.balance;
         if (rankBy === "overdue") return b.overdueAmount - a.overdueAmount;
@@ -319,13 +377,42 @@ export async function getTopCustomers(input?: {
       })
       .slice(0, limit);
 
+    const withBalance = (customersPayload.value ?? []).filter(
+      (c) => Number(c.balance ?? 0) > 0,
+    );
+    const totals =
+      rankBy === "balance" || rankBy === "overdue"
+        ? {
+            totalOutstanding: round(
+              withBalance.reduce((s, c) => s + Number(c.balance ?? 0), 0),
+            ),
+            totalOverdue: round(
+              withBalance.reduce((s, c) => s + Number(c.overdueAmount ?? 0), 0),
+            ),
+            totalNotYetDue: round(
+              withBalance.reduce(
+                (s, c) =>
+                  s +
+                  Math.max(
+                    0,
+                    Number(c.balance ?? 0) - Number(c.overdueAmount ?? 0),
+                  ),
+                0,
+              ),
+            ),
+          }
+        : undefined;
+
     return {
       currency: "NPR",
       rankBy,
       basis:
         rankBy === "lifetime_master"
           ? "Customer master totalSalesExcludingTax (all-time BC field)."
-          : "Customer master balance / overdueAmount as of last sync.",
+          : rankBy === "balance"
+            ? "Customer master balance (total outstanding). overdueAmount = past due; notYetDueAmount = still within payment terms."
+            : "Customer master balance / overdueAmount as of last sync.",
+      ...(totals ? { totals } : {}),
       customers: rows,
       _syncedAt: customersPayload._syncedAt,
     };
@@ -623,12 +710,12 @@ export async function compareRevenuePeriods(input?: {
 }
 
 /** Payments and credit memos aggregated by period and optionally one customer. */
-export async function getPaymentsSummary(input?: {
-  year?: number;
-  month?: number;
-  customerNo?: string;
-  query?: string;
-}): Promise<unknown> {
+export async function getPaymentsSummary(
+  input?: {
+    customerNo?: string;
+    query?: string;
+  } & DatePeriodInput,
+): Promise<unknown> {
   let customerNo = input?.customerNo;
   let customerName: string | undefined;
   if (!customerNo && input?.query) {
@@ -637,6 +724,10 @@ export async function getPaymentsSummary(input?: {
     customerNo = resolved.customerNo;
     customerName = resolved.name;
   }
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
 
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
@@ -651,11 +742,7 @@ export async function getPaymentsSummary(input?: {
   >();
 
   for (const entry of ledgerPayload.value ?? []) {
-    const date = parseDate(entry.postingDate);
-    if (!date) continue;
-    if (input?.year || input?.month) {
-      if (!inAdPeriod(date, input.year, input.month)) continue;
-    }
+    if (!entry.postingDate || !period.matches(entry.postingDate)) continue;
 
     const entryCust = entryCustomerNo(entry);
     if (customerNo && entryCust !== customerNo) continue;
@@ -693,10 +780,7 @@ export async function getPaymentsSummary(input?: {
 
   return {
     currency: "NPR",
-    period: {
-      year: input?.year ?? "all_synced_years",
-      month: input?.month ?? null,
-    },
+    period: period.label,
     customerNo: customerNo ?? null,
     customerName: customerName ?? (customerNo ? names.get(customerNo) : null),
     totalPayments: round(totalPayments),
@@ -1439,6 +1523,336 @@ export async function searchLedgerEntries(input?: {
     matchCount: matches.length,
     entries: matches,
     _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** Year-over-year invoice sales for one customer (ledger). */
+export async function compareCustomerYearlySales(input?: {
+  customerNo?: string;
+  query?: string;
+  years?: number[];
+}): Promise<unknown> {
+  const resolved = await resolveCustomerNo(input);
+  if ("error" in resolved) return resolved;
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const currentYear = new Date().getFullYear();
+  const years =
+    input?.years && input.years.length > 0
+      ? [...input.years].sort((a, b) => a - b)
+      : [currentYear - 2, currentYear - 1, currentYear];
+
+  const byYear = years.map((year) => ({
+    year,
+    salesExcludingTax: 0,
+    invoiceCount: 0,
+  }));
+
+  for (const entry of ledgerPayload.value ?? []) {
+    if (entry.documentType !== "Invoice") continue;
+    if (entryCustomerNo(entry) !== resolved.customerNo) continue;
+    const date = parseDate(entry.postingDate);
+    if (!date) continue;
+    const slot = byYear.find((row) => row.year === date.getFullYear());
+    if (!slot) continue;
+    slot.salesExcludingTax += Number(entry.salesLcy ?? 0);
+    slot.invoiceCount += 1;
+  }
+
+  const cleaned = byYear.map((row) => ({
+    ...row,
+    salesExcludingTax: round(row.salesExcludingTax),
+  }));
+
+  const first = cleaned[0]?.salesExcludingTax ?? 0;
+  const last = cleaned[cleaned.length - 1]?.salesExcludingTax ?? 0;
+
+  return {
+    currency: "NPR",
+    customerNo: resolved.customerNo,
+    name: resolved.name,
+    basis: "Customer ledger invoice entries (salesLcy) by AD year.",
+    years: cleaned,
+    changeFirstToLast: round(last - first),
+    changePercentFirstToLast:
+      first > 0 ? round(((last - first) / first) * 100) : null,
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** Top customers by invoice sales for each of several AD years (side-by-side). */
+export async function compareTopCustomersYearly(input?: {
+  years?: number[];
+  limit?: number;
+}): Promise<unknown> {
+  const limit = Math.min(input?.limit ?? 10, 25);
+  const currentYear = new Date().getFullYear();
+  const years =
+    input?.years && input.years.length > 0
+      ? [...input.years].sort((a, b) => a - b)
+      : [currentYear - 2, currentYear - 1, currentYear];
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+  const names = await buildCustomerNameMap();
+
+  const byYear = new Map<
+    number,
+    Map<string, { customerNo: string; name: string; sales: number; invoices: number }>
+  >();
+
+  for (const year of years) {
+    byYear.set(year, new Map());
+  }
+
+  for (const entry of ledgerPayload.value ?? []) {
+    if (entry.documentType !== "Invoice") continue;
+    const date = parseDate(entry.postingDate);
+    if (!date) continue;
+    const year = date.getFullYear();
+    const yearMap = byYear.get(year);
+    if (!yearMap) continue;
+
+    const customerNo = entryCustomerNo(entry);
+    if (!customerNo) continue;
+    const agg =
+      yearMap.get(customerNo) ??
+      { customerNo, name: names.get(customerNo) ?? "", sales: 0, invoices: 0 };
+    agg.sales += Number(entry.salesLcy ?? 0);
+    agg.invoices += 1;
+    yearMap.set(customerNo, agg);
+  }
+
+  const result = years.map((year) => {
+    const ranked = [...(byYear.get(year)?.values() ?? [])]
+      .map((row) => ({
+        customerNo: row.customerNo,
+        name: row.name,
+        salesExcludingTax: round(row.sales),
+        invoiceCount: row.invoices,
+      }))
+      .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+      .slice(0, limit);
+
+    return { year, topCustomers: ranked, topCustomer: ranked[0] ?? null };
+  });
+
+  return {
+    currency: "NPR",
+    basis: "Customer ledger invoice sales (salesLcy) ranked per AD year.",
+    years: result,
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** Collection / DSO-style metrics from open invoices and recent sales. */
+export async function getCollectionMetrics(input?: {
+  customerNo?: string;
+  query?: string;
+  lookbackDays?: number;
+}): Promise<unknown> {
+  const lookbackDays = input?.lookbackDays ?? 90;
+  let customerNo = input?.customerNo;
+  let customerName: string | undefined;
+
+  if (!customerNo && input?.query) {
+    const resolved = await resolveCustomerNo({ query: input.query });
+    if ("error" in resolved) return resolved;
+    customerNo = resolved.customerNo;
+    customerName = resolved.name;
+  }
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const now = new Date();
+  const lookbackStart = new Date(now);
+  lookbackStart.setDate(lookbackStart.getDate() - lookbackDays);
+  const lookbackKey = lookbackStart.toISOString().slice(0, 10);
+
+  let totalOutstanding = 0;
+  let weightedDaysPastDue = 0;
+  let weightedInvoiceAge = 0;
+  let openInvoiceCount = 0;
+  let salesInLookback = 0;
+  let invoiceCountInLookback = 0;
+
+  for (const entry of ledgerPayload.value ?? []) {
+    const entryCust = entryCustomerNo(entry);
+    if (customerNo && entryCust !== customerNo) continue;
+
+    const postingDate = parseDate(entry.postingDate);
+    if (!postingDate) continue;
+
+    if (entry.documentType === "Invoice") {
+      const sales = Number(entry.salesLcy ?? 0);
+      if (entry.postingDate && entry.postingDate.slice(0, 10) >= lookbackKey) {
+        salesInLookback += sales;
+        invoiceCountInLookback += 1;
+      }
+
+      const remaining = Number(entry.remainingAmount ?? 0);
+      if (entry.open && remaining > 0) {
+        openInvoiceCount += 1;
+        totalOutstanding += remaining;
+
+        const due = parseDate(entry.dueDate) ?? postingDate;
+        const daysPastDue = Math.max(
+          0,
+          Math.floor((now.getTime() - due.getTime()) / 86400000),
+        );
+        const invoiceAge = Math.max(
+          0,
+          Math.floor((now.getTime() - postingDate.getTime()) / 86400000),
+        );
+        weightedDaysPastDue += remaining * daysPastDue;
+        weightedInvoiceAge += remaining * invoiceAge;
+      }
+    }
+  }
+
+  const avgDaysPastDue =
+    totalOutstanding > 0 ? round(weightedDaysPastDue / totalOutstanding) : 0;
+  const avgOpenInvoiceAgeDays =
+    totalOutstanding > 0 ? round(weightedInvoiceAge / totalOutstanding) : 0;
+  const estimatedDsoDays =
+    salesInLookback > 0
+      ? round((totalOutstanding / salesInLookback) * lookbackDays)
+      : null;
+
+  if (customerNo && !customerName) {
+    const names = await buildCustomerNameMap();
+    customerName = names.get(customerNo);
+  }
+
+  return {
+    currency: "NPR",
+    asOf: now.toISOString().slice(0, 10),
+    customerNo: customerNo ?? null,
+    customerName: customerName ?? null,
+    scope: customerNo ? "single_customer" : "company_wide",
+    lookbackDays,
+    basis:
+      "Open invoice remaining amounts aged by due date; DSO estimate = (outstanding / invoice sales in lookback window) × lookback days.",
+    totalOutstanding: round(totalOutstanding),
+    openInvoiceCount,
+    averageDaysPastDueOnOpenInvoices: avgDaysPastDue,
+    averageOpenInvoiceAgeDays: avgOpenInvoiceAgeDays,
+    salesInLookbackPeriod: round(salesInLookback),
+    invoicesInLookbackPeriod: invoiceCountInLookback,
+    estimatedCollectionDaysDso: estimatedDsoDays,
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** Top customers ranked by payments received (ledger Payment entries). */
+export async function getTopPayingCustomers(
+  input?: { limit?: number } & DatePeriodInput,
+): Promise<unknown> {
+  const limit = Math.min(input?.limit ?? 10, 50);
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
+  const summary = (await getPaymentsSummary({
+    ...input,
+  })) as {
+    error?: string;
+    totalPayments?: number;
+    paymentCount?: number;
+    topPayers?: Array<{
+      customerNo: string;
+      name: string;
+      payments: number;
+      creditMemos: number;
+    }>;
+    period?: unknown;
+    _syncedAt?: string;
+  };
+
+  if (summary.error) return summary;
+
+  const customers = (summary.topPayers ?? [])
+    .sort((a, b) => b.payments - a.payments)
+    .slice(0, limit);
+
+  return {
+    currency: "NPR",
+    period: period.label,
+    basis: "Customer ledger Payment entries (absolute amountLcy).",
+    totalPayments: summary.totalPayments,
+    paymentCount: summary.paymentCount,
+    customers,
+    _syncedAt: summary._syncedAt,
+  };
+}
+
+/** Inventory list filtered by item type (Raw Materials, Finished Goods, etc.). */
+export async function getInventoryByItemType(input?: {
+  itemType?: string;
+  limit?: number;
+}): Promise<unknown> {
+  const limit = Math.min(input?.limit ?? 50, 200);
+  const payload = await loadItems();
+  if (payload.error) return { error: payload.error };
+
+  const typeFilter = (input?.itemType ?? "").trim().toLowerCase();
+  const availableTypes = [
+    ...new Set(
+      (payload.value ?? [])
+        .map((item) => item.itemType)
+        .filter(Boolean) as string[],
+    ),
+  ].sort();
+
+  let items = payload.value ?? [];
+  if (typeFilter) {
+    items = items.filter((item) =>
+      String(item.itemType ?? "")
+        .toLowerCase()
+        .includes(typeFilter),
+    );
+  }
+
+  const mapped = items
+    .map((item) => ({
+      itemNo: item.number,
+      name: item.displayName,
+      itemType: item.itemType,
+      category: item.itemCategory,
+      inventory: Number(item.inventory ?? 0),
+      unitCost: Number(item.unitCost ?? 0),
+      unitPrice: Number(item.unitPrice ?? 0),
+      stockValueAtCost: round(
+        Number(item.inventory ?? 0) * Number(item.unitCost ?? 0),
+      ),
+      blocked: !!item.blocked,
+    }))
+    .sort((a, b) => b.stockValueAtCost - a.stockValueAtCost)
+    .slice(0, limit);
+
+  const totals = mapped.reduce(
+    (acc, item) => {
+      acc.units += item.inventory;
+      acc.valueAtCost += item.stockValueAtCost;
+      return acc;
+    },
+    { units: 0, valueAtCost: 0 },
+  );
+
+  return {
+    currency: "NPR",
+    itemTypeFilter: input?.itemType ?? null,
+    availableItemTypes: availableTypes,
+    matchCount: items.length,
+    listedCount: mapped.length,
+    totalInventoryUnits: round(totals.units),
+    totalStockValueAtCost: round(totals.valueAtCost),
+    items: mapped,
+    note: "Current inventory snapshot from item master — not movement since X days.",
+    _syncedAt: payload._syncedAt,
   };
 }
 

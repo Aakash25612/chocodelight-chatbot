@@ -21,15 +21,20 @@ import {
 } from "./analytics";
 import {
   compareRevenuePeriods,
+  compareCustomerYearlySales,
+  compareTopCustomersYearly,
   getCategorySales,
+  getCollectionMetrics,
   getCustomerAlerts,
   getCustomerProductSales,
   getCustomerSales,
   getDailyRevenue,
+  getInventoryByItemType,
   getInventorySummary,
   getItemDetail,
   getLowStockItems,
   getMrRecords,
+  getOutstandingReceivables,
   getPaymentsSummary,
   getSalesBySalesperson,
   getSalesOrdersSummary,
@@ -37,6 +42,7 @@ import {
   getTopCustomers,
   getTopCustomersByMonth,
   getTopCustomersByNepaliMonth,
+  getTopPayingCustomers,
   searchLedgerEntries,
   searchSalesOrders,
 } from "./analytics-queries";
@@ -223,7 +229,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_receivables_aging",
     description:
-      "Get accounts receivable aging from open customer invoices, bucketed by days past due (Not due, 1-30, 31-60, 61-90, Over 90 days). Use for overdue / outstanding / 'payment pending' / 'X days pending' / collection questions. Returns bucket totals, top overdue customers, and overdue invoice details.",
+      "Aging buckets for open invoices by days past due (Not due, 1-30, 31-60, 61-90, Over 90 days). Use for overdue-only questions, 'X days payment pending', or aging analysis — NOT for ranking who owes the most total (use get_outstanding_receivables). Also returns topCustomersByBalance with overdue vs not-yet-due split.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -231,6 +237,20 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.NUMBER,
           description:
             "Optional. Only include invoices overdue by at least this many days, e.g. 90 for '90 days payment pending'.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_outstanding_receivables",
+    description:
+      "Total outstanding receivables ranked by customer balance (matches ERP/Power BI). Use for 'who owes the most', 'outstanding payment', 'total receivable', 'top parties by balance'. Returns total outstanding plus per-customer overdueAmount and notYetDueAmount (owed but deadline not reached).",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        limit: {
+          type: SchemaType.NUMBER,
+          description: "How many customers to return. Default 15.",
         },
       },
     },
@@ -253,7 +273,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales totals from synced sales order lines. Use for product/keyword sales with ANY date filter: year, month, week, dateFrom/dateTo, or Nepali month. For one customer's purchases use get_customer_product_sales.",
+      "Get invoiced product sales totals and averageUnitPrice from synced sales order lines. Use for product sales amount AND average selling price questions.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -295,7 +315,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_top_customers",
     description:
-      "Rank customers by invoice sales (ledger), balance, overdue, or lifetime master sales. Use for 'top 10 customers this year', 'biggest customers overall', 'who owes the most'. For a specific AD month use get_top_customers_by_month instead.",
+      "Rank customers by invoice sales (ledger), balance, overdue, or lifetime master sales. Use for 'top 10 customers this year', 'biggest customers overall'. For outstanding/receivable ranking use get_outstanding_receivables instead. For a specific AD month use get_top_customers_by_month instead.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -557,6 +577,86 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
+    name: "compare_customer_yearly_sales",
+    description:
+      "Compare one customer's invoiced sales across multiple AD years (default last 3 years). Use for 'X customer sales last 3 years', year-on-year customer trend.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Customer name." },
+        customerNo: { type: SchemaType.STRING },
+        years: {
+          type: SchemaType.ARRAY,
+          items: { type: SchemaType.NUMBER },
+          description: "AD years to compare, e.g. [2024, 2025, 2026].",
+        },
+      },
+    },
+  },
+  {
+    name: "compare_top_customers_yearly",
+    description:
+      "Top customers by invoice sales for each of several AD years side-by-side. Use for yearly customer sales comparison / ranking trends.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        years: {
+          type: SchemaType.ARRAY,
+          items: { type: SchemaType.NUMBER },
+          description: "AD years, e.g. [2024, 2025, 2026]. Default last 3 years.",
+        },
+        limit: {
+          type: SchemaType.NUMBER,
+          description: "Top N customers per year. Default 10.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_collection_metrics",
+    description:
+      "Average collection days / DSO estimate from open invoices and recent sales. Company-wide or one customer (pass query). Use for 'average days of collection', 'how fast does X pay'.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Optional customer name." },
+        customerNo: { type: SchemaType.STRING },
+        lookbackDays: {
+          type: SchemaType.NUMBER,
+          description: "Sales window for DSO estimate. Default 90.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_top_paying_customers",
+    description:
+      "Rank customers by total payments received. Use for 'best 10 customers payment wise', top payers this year/month.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        limit: { type: SchemaType.NUMBER, description: "Default 10." },
+        ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "get_inventory_by_item_type",
+    description:
+      "List stock by item type: Raw Materials, Finished Goods, Others, Store. Use for RM/FG stock lists.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        itemType: {
+          type: SchemaType.STRING,
+          description:
+            "Filter e.g. 'Raw Materials', 'Finished Goods', 'Finished', 'Raw'.",
+        },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
     name: "create_sales_order",
     description:
       "Create a new sales order with line items. Requires customerNumber and salesOrderLines array.",
@@ -800,6 +900,17 @@ export async function executeTool(
             : undefined,
         );
         break;
+      case "get_outstanding_receivables":
+        if (!useSupabaseMirror) {
+          return {
+            error: "Outstanding receivables requires Supabase mirror mode.",
+          };
+        }
+        result = await getOutstandingReceivables({
+          limit:
+            typeof args.limit === "number" ? (args.limit as number) : undefined,
+        });
+        break;
       case "search_items":
         if (!useSupabaseMirror) {
           return { error: "Item search requires Supabase mirror mode." };
@@ -879,10 +990,9 @@ export async function executeTool(
       case "get_payments_summary":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getPaymentsSummary({
-          year: typeof args.year === "number" ? args.year : undefined,
-          month: typeof args.month === "number" ? args.month : undefined,
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_inventory_summary":
@@ -977,6 +1087,50 @@ export async function executeTool(
       case "get_sync_status":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getSyncStatus();
+        break;
+      case "compare_customer_yearly_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await compareCustomerYearlySales({
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          years: Array.isArray(args.years)
+            ? (args.years as number[])
+            : undefined,
+        });
+        break;
+      case "compare_top_customers_yearly":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await compareTopCustomersYearly({
+          years: Array.isArray(args.years)
+            ? (args.years as number[])
+            : undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_collection_metrics":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getCollectionMetrics({
+          customerNo: args.customerNo as string | undefined,
+          query: args.query as string | undefined,
+          lookbackDays:
+            typeof args.lookbackDays === "number"
+              ? args.lookbackDays
+              : undefined,
+        });
+        break;
+      case "get_top_paying_customers":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getTopPayingCustomers({
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
+        });
+        break;
+      case "get_inventory_by_item_type":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getInventoryByItemType({
+          itemType: args.itemType as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
         break;
       case "create_sales_order":
         if (useSupabaseMirror) {

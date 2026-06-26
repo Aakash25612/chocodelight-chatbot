@@ -228,6 +228,9 @@ export async function getReceivablesAging(
   const totalOverdue = buckets
     .filter((b) => b.bucket !== "Not due")
     .reduce((sum, b) => sum + b.amount, 0);
+  const totalNotYetDue = buckets
+    .filter((b) => b.bucket === "Not due")
+    .reduce((sum, b) => sum + b.amount, 0);
 
   overdueEntries.sort((a, b) => b.daysOverdue - a.daysOverdue);
 
@@ -236,12 +239,30 @@ export async function getReceivablesAging(
     .slice(0, 15)
     .map((c) => ({ ...c, overdue: round(c.overdue) }));
 
+  const topCustomersByBalance = (customersPayload.value ?? [])
+    .map((customer) => {
+      const balance = round(Number(customer.balance ?? 0));
+      const overdueAmount = round(Number(customer.overdueAmount ?? 0));
+      return {
+        customerNo: customer.number,
+        name: customer.displayName,
+        balance,
+        overdueAmount,
+        notYetDueAmount: round(Math.max(0, balance - overdueAmount)),
+      };
+    })
+    .filter((row) => row.balance > 0)
+    .sort((a, b) => b.balance - a.balance)
+    .slice(0, 15);
+
   return {
     currency: "NPR",
     asOf: now.toISOString().slice(0, 10),
-    basis: "Open customer ledger invoice entries, aged by due date.",
+    basis:
+      "Open customer ledger invoice entries, aged by due date. For who owes the most by total balance, use topCustomersByBalance (overdue vs not yet due split).",
     totalOutstanding: round(totalOutstanding),
     totalOverdue: round(totalOverdue),
+    totalNotYetDue: round(totalNotYetDue),
     buckets: buckets.map((b) => ({ ...b, amount: round(b.amount) })),
     ...(minDaysOverdue
       ? { filterDaysOverdue: minDaysOverdue }
@@ -251,6 +272,7 @@ export async function getReceivablesAging(
     ),
     overdueEntries: overdueEntries.slice(0, 50),
     topOverdueCustomers,
+    topCustomersByBalance,
     _syncedAt: ledgerPayload._syncedAt,
   };
 }
@@ -717,6 +739,10 @@ export async function getProductSales(
       ...row,
       quantityInvoiced: round(row.quantityInvoiced),
       salesExcludingTax: round(row.salesExcludingTax),
+      averageUnitPrice:
+        row.quantityInvoiced > 0
+          ? round(row.salesExcludingTax / row.quantityInvoiced)
+          : 0,
     }))
     .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
 
@@ -734,6 +760,8 @@ export async function getProductSales(
     },
     totalSalesExcludingTax: round(totalSales),
     totalQuantityInvoiced: round(totalQuantity),
+    averageUnitPrice:
+      totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
     matchedLineCount: matchedLines,
     items,
     _syncedAt:
