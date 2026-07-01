@@ -5,7 +5,11 @@ import {
   branchCodeFromDocument,
   listBranchDefinitions,
   resolveBranch,
+  branchNameForCode,
 } from "./branches";
+import {
+  loadBranchSalesCache,
+} from "./branch-sales-cache";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
@@ -129,11 +133,6 @@ async function loadMr(): Promise<MirrorPayload<MrRecord>> {
   return (await getMirror("mr")) as MirrorPayload<MrRecord>;
 }
 
-function branchNameForCode(code: string): string {
-  const hit = listBranchDefinitions().find((b) => b.code === code);
-  return hit?.name ?? `Branch ${code}`;
-}
-
 function aggregateInvoiceSalesByBranch(
   entries: LedgerEntry[],
   matches?: (postingDate?: string) => boolean,
@@ -150,6 +149,19 @@ function aggregateInvoiceSalesByBranch(
     totals.set(code, agg);
   }
   return totals;
+}
+
+function hasCustomPeriod(input?: DatePeriodInput): boolean {
+  return Boolean(
+    input?.year ||
+      input?.month ||
+      input?.week ||
+      input?.day ||
+      input?.nepaliMonth ||
+      input?.fiscalYearStart ||
+      input?.dateFrom ||
+      input?.dateTo,
+  );
 }
 
 async function buildCustomerNameMap(): Promise<Map<string, string>> {
@@ -1362,6 +1374,26 @@ export async function getSalesBySalesperson(
 /** List accountability-center branches for the active company. */
 export async function listBranches(): Promise<unknown> {
   const branches = listBranchDefinitions();
+  const cached = await loadBranchSalesCache();
+
+  if (cached) {
+    const byCode = new Map(
+      cached.allTime.branches.map((row) => [row.branchCode, row]),
+    );
+    return {
+      note:
+        "Branches map to BC accountability-center codes on invoice document numbers (e.g. B_SFP_... = code B).",
+      branches: branches.map((branch) => ({
+        code: branch.code,
+        name: branch.name,
+        aliases: branch.aliases,
+        allTimeInvoiceSales: byCode.get(branch.code)?.salesExcludingTax ?? 0,
+        allTimeInvoices: byCode.get(branch.code)?.invoices ?? 0,
+      })),
+      _syncedAt: cached._builtAt,
+    };
+  }
+
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
@@ -1389,6 +1421,28 @@ export async function getBranchWiseSales(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
+  const cached = !hasCustomPeriod(input) ? await loadBranchSalesCache() : null;
+  if (cached && period.label === "all synced dates") {
+    const currentFyStart = getCurrentFiscalYearStart();
+    const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
+    return {
+      currency: "NPR",
+      period: period.label,
+      basis:
+        "Posted customer-ledger invoices (salesLcy). Branch = document prefix before underscore.",
+      totalSalesExcludingTax: cached.allTime.totalSales,
+      branchCount: cached.allTime.branches.length,
+      branches: cached.allTime.branches,
+      currentNepaliFiscalYear: fyLabel
+        ? {
+            label: fyLabel,
+            ...cached.byNepaliFiscalYear[fyLabel],
+          }
+        : null,
+      _syncedAt: cached._builtAt,
+    };
+  }
+
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
@@ -1415,7 +1469,7 @@ export async function getBranchWiseSales(
     totalSales: number;
   } | null = null;
 
-  if (currentFyStart && !input?.year && !input?.month && !input?.nepaliMonth && !input?.dateFrom) {
+  if (currentFyStart && !hasCustomPeriod(input)) {
     const fyTotals = aggregateInvoiceSalesByBranch(
       ledgerPayload.value ?? [],
       (postingDate) => {
@@ -1467,6 +1521,39 @@ export async function getSalesByBranch(
   const periodResult = periodFromInput(input);
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
+
+  const cached = !hasCustomPeriod(input) ? await loadBranchSalesCache() : null;
+  if (cached && period.label === "all synced dates") {
+    const row = cached.allTime.branches.find(
+      (entry) => entry.branchCode === resolved.code,
+    );
+    const currentFyStart = getCurrentFiscalYearStart();
+    const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
+    const fyRow = fyLabel
+      ? cached.byNepaliFiscalYear[fyLabel]?.branches.find(
+          (entry) => entry.branchCode === resolved.code,
+        )
+      : null;
+
+    return {
+      currency: "NPR",
+      branchCode: resolved.code,
+      branchName: resolved.name,
+      period: period.label,
+      basis:
+        "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code.",
+      totalSalesExcludingTax: row?.salesExcludingTax ?? 0,
+      invoiceCount: row?.invoices ?? 0,
+      currentNepaliFiscalYear: fyLabel
+        ? {
+            label: fyLabel,
+            salesExcludingTax: fyRow?.salesExcludingTax ?? 0,
+            invoices: fyRow?.invoices ?? 0,
+          }
+        : null,
+      _syncedAt: cached._builtAt,
+    };
+  }
 
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };

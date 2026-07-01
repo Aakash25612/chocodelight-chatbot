@@ -12,6 +12,7 @@ import { geminiConfig } from "@/lib/config";
 import { getDirectResponse } from "@/lib/direct-responses";
 import { normalizeCompanyKey } from "@/lib/companies";
 import { runWithCompany } from "@/lib/company-context";
+import { runWithMirrorCache } from "@/lib/mirror-cache";
 
 export const maxDuration = 60;
 
@@ -55,7 +56,9 @@ export async function POST(request: Request) {
     }
 
     return await runWithCompany(company, () =>
-      handleChat(messages, existingConversationId),
+      runWithMirrorCache(() =>
+        handleChat(messages, existingConversationId, company),
+      ),
     );
   } catch (error) {
     const { message, status } = formatGeminiError(error);
@@ -66,6 +69,7 @@ export async function POST(request: Request) {
 async function handleChat(
   messages: ChatMessage[],
   existingConversationId?: string,
+  company?: string,
 ) {
   let conversationId = existingConversationId;
 
@@ -91,7 +95,7 @@ async function handleChat(
 
     const history = getGeminiHistory(messages);
     const lastMessage = messages[messages.length - 1].content;
-    const directResponse = await getDirectResponse(lastMessage);
+    const directResponse = await getDirectResponse(lastMessage, company);
 
     if (directResponse) {
       if (conversationId && isSupabaseConfigured()) {

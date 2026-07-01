@@ -1,5 +1,9 @@
 import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
+import { getSalesByBranch, getBranchWiseSales } from "./analytics-queries";
+import { resolveBranch } from "./branches";
+import { runWithCompany } from "./company-context";
+import { normalizeCompanyKey } from "./companies";
 
 type Customer = {
   number?: string;
@@ -25,14 +29,139 @@ type MirrorPayload<T> = {
 
 export async function getDirectResponse(
   message: string,
+  company?: string,
 ): Promise<string | null> {
   const normalized = message.trim().toLowerCase();
 
-  if (isListAllCustomers(normalized)) {
-    return listAllCustomers();
+  return runWithCompany(normalizeCompanyKey(company), async () => {
+    if (isListAllCustomers(normalized)) {
+      return listAllCustomers();
+    }
+
+    const branchCode = extractBranchCodeQuery(message);
+    if (branchCode) {
+      return formatBranchSales(branchCode);
+    }
+
+    if (isBranchWiseSalesQuery(normalized)) {
+      return formatBranchWiseSales();
+    }
+
+    return null;
+  });
+}
+
+function extractBranchCodeQuery(message: string): string | null {
+  const normalized = message.trim().toLowerCase();
+  const patterns = [
+    /\b(?:code|branch)\s+([a-z])\b/i,
+    /\b(?:sales|total)\s+(?:of\s+)?(?:code|branch)\s+([a-z])\b/i,
+    /\b([a-z])\s+branch\s+(?:sales|total)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match?.[1]) return match[1].toUpperCase();
+  }
+  return null;
+}
+
+function isBranchWiseSalesQuery(message: string): boolean {
+  return /\bbranch\s*wise\b/.test(message) || /\bbranch-wise\b/.test(message);
+}
+
+async function formatBranchSales(branchCode: string): Promise<string> {
+  const branch = resolveBranch({ branchCode });
+  if ("error" in branch) {
+    return branch.error;
   }
 
-  return null;
+  const data = (await getSalesByBranch({ branchCode })) as {
+    error?: string;
+    branchName?: string;
+    totalSalesExcludingTax?: number;
+    invoiceCount?: number;
+    currentNepaliFiscalYear?: {
+      label: string;
+      salesExcludingTax: number;
+      invoices: number;
+    };
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const lines = [
+    `**${data.branchName} (code ${branchCode})** — posted invoice sales${formatSync(data._syncedAt)}`,
+    "",
+    `| Period | Sales (NPR) | Invoices |`,
+    `|---|---:|---:|`,
+    `| All synced data | ${formatAmount(data.totalSalesExcludingTax)} | ${data.invoiceCount ?? 0} |`,
+  ];
+
+  if (data.currentNepaliFiscalYear) {
+    lines.push(
+      `| Nepali FY ${data.currentNepaliFiscalYear.label} | ${formatAmount(data.currentNepaliFiscalYear.salesExcludingTax)} | ${data.currentNepaliFiscalYear.invoices} |`,
+    );
+  }
+
+  return lines.join("\n");
+}
+
+async function formatBranchWiseSales(): Promise<string> {
+  const data = (await getBranchWiseSales()) as {
+    error?: string;
+    branches?: Array<{
+      branchCode: string;
+      branchName: string;
+      salesExcludingTax: number;
+      invoices: number;
+    }>;
+    totalSalesExcludingTax?: number;
+    currentNepaliFiscalYear?: {
+      label: string;
+      totalSales: number;
+      branches: Array<{
+        branchCode: string;
+        branchName: string;
+        salesExcludingTax: number;
+        invoices: number;
+      }>;
+    };
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const lines = [
+    `**Branch-wise sales** (Saurabh Food)${formatSync(data._syncedAt)}`,
+    "",
+    "### All synced invoice sales",
+    "",
+    "| Code | Branch | Sales (NPR) | Invoices |",
+    "|---|---|---:|---:|",
+    ...(data.branches ?? []).map(
+      (row) =>
+        `| ${row.branchCode} | ${row.branchName} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+    ),
+    `| **Total** | | **${formatAmount(data.totalSalesExcludingTax)}** | |`,
+  ];
+
+  if (data.currentNepaliFiscalYear) {
+    lines.push(
+      "",
+      `### Current Nepali FY ${data.currentNepaliFiscalYear.label}`,
+      "",
+      "| Code | Branch | Sales (NPR) | Invoices |",
+      "|---|---|---:|---:|",
+      ...data.currentNepaliFiscalYear.branches.map(
+        (row) =>
+          `| ${row.branchCode} | ${row.branchName} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+      ),
+      `| **Total** | | **${formatAmount(data.currentNepaliFiscalYear.totalSales)}** | |`,
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function isListAllCustomers(message: string): boolean {

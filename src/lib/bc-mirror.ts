@@ -1,5 +1,9 @@
 import { getSupabaseAdmin } from "./supabase";
 import { getActiveCompany } from "./company-context";
+import {
+  getMirrorCacheStore,
+  mirrorCacheKey,
+} from "./mirror-cache";
 
 export type MirrorEntity =
   | "companies"
@@ -14,6 +18,18 @@ export type MirrorEntity =
   | "api_catalog";
 
 export async function getMirror(entityType: MirrorEntity): Promise<unknown> {
+  const cache = getMirrorCacheStore();
+  const cacheKey = mirrorCacheKey(entityType);
+  if (cache?.has(cacheKey)) {
+    return cache.get(cacheKey);
+  }
+
+  const data = await fetchMirror(entityType);
+  cache?.set(cacheKey, data);
+  return data;
+}
+
+async function fetchMirror(entityType: MirrorEntity): Promise<unknown> {
   const supabase = getSupabaseAdmin();
   const company = getActiveCompany();
   const { data, error } = await supabase

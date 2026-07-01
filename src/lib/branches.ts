@@ -120,6 +120,11 @@ export function branchCodeFromDocument(documentNo?: string): string | null {
   return match ? match[1] : null;
 }
 
+export function branchNameForCode(code: string): string {
+  const hit = listBranchDefinitions().find((b) => b.code === code);
+  return hit?.name ?? `Branch ${code}`;
+}
+
 function normalizeTerm(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }

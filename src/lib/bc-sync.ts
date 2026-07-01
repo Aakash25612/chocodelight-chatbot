@@ -4,6 +4,10 @@ import type { MirrorEntity } from "./bc-mirror";
 import { listCompanies, type CompanyKey } from "./companies";
 import { getActiveCompany, runWithCompany } from "./company-context";
 import { buildDerivedCustomersPayload } from "./derived-customers";
+import {
+  buildBranchSalesCache,
+  saveBranchSalesCache,
+} from "./branch-sales-cache";
 
 const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
   { type: "companies", fetch: () => bcApi.getCompanies() },
@@ -20,6 +24,13 @@ const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
 
 const MAX_INLINE_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const MIRROR_CHUNK_SIZE = 5000;
+
+type LedgerEntry = {
+  documentType?: string;
+  postingDate?: string;
+  salesLcy?: number;
+  documentNo?: string;
+};
 
 function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
   if (
@@ -149,6 +160,16 @@ async function syncCompany(): Promise<CompanySyncResult> {
         payload,
         syncedAt,
       });
+
+      if (
+        type === "custLedgEntries" &&
+        Array.isArray((payload as { value?: unknown[] }).value)
+      ) {
+        const branchCache = buildBranchSalesCache(
+          (payload as { value: LedgerEntry[] }).value,
+        );
+        await saveBranchSalesCache(branchCache);
+      }
 
       await supabase.from("bc_sync_meta").upsert({
         company,

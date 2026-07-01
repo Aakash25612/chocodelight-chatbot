@@ -9,6 +9,7 @@
     "lint": "eslint",
     "vpn:connect": "bash scripts/connect-vpn.sh",
     "sync:bc": "tsx scripts/sync-bc.ts",
+    "build:branch-cache": "tsx scripts/build-branch-cache.ts",
     "deploy": "vercel",
     "deploy:prod": "vercel --prod"
   },
