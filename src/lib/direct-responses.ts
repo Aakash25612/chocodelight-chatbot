@@ -67,7 +67,7 @@ function extractBranchCodeQuery(message: string): string | null {
   const normalized = message.trim().toLowerCase();
   const patterns = [
     /\b(?:code|branch|depo(?:t)?)\s*[:=]?\s*([a-z])\b/i,
-    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+month/i,
+    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+by\s+month/i,
     /\b(?:sales|total|revenue)\s+(?:of|for)?\s*(?:code|branch|depo(?:t)?)\s*([a-z])\b/i,
     /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+(?:sales|total|revenue)\b/i,
     /\b([a-z])\s+branch\s+(?:sales|total|revenue)?\b/i,
@@ -86,7 +86,7 @@ function isBranchWiseSalesQuery(message: string): boolean {
 }
 
 function wantsMonthlyBreakdown(message: string): boolean {
-  return /\b(month\s*(by|wise|-wise)|monthly|month[- ]by[- ]month|mahina)\b/i.test(
+  return /\b(month\s*(by|wise|-wise)|by\s+month|monthly|month[- ]by[- ]month|monthwise|per\s+month|each\s+month|mahina)\b/i.test(
     message,
   );
 }
