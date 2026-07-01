@@ -1,6 +1,11 @@
 import { getMirror, getSyncStatus } from "./bc-mirror";
 import { searchCustomers } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
+import {
+  branchCodeFromDocument,
+  listBranchDefinitions,
+  resolveBranch,
+} from "./branches";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
@@ -1327,6 +1332,111 @@ export async function getSalesBySalesperson(
       .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
       .slice(0, limit),
     _syncedAt: linesPayload._syncedAt,
+  };
+}
+
+/** List accountability-center branches for the active company. */
+export async function listBranches(): Promise<unknown> {
+  const branches = listBranchDefinitions();
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const totals = new Map<string, { sales: number; invoices: number }>();
+  for (const entry of ledgerPayload.value ?? []) {
+    if (entry.documentType !== "Invoice") continue;
+    const code = branchCodeFromDocument(entry.documentNo);
+    if (!code) continue;
+    const agg = totals.get(code) ?? { sales: 0, invoices: 0 };
+    agg.sales += Number(entry.salesLcy ?? 0);
+    agg.invoices += 1;
+    totals.set(code, agg);
+  }
+
+  return {
+    note:
+      "Branches map to BC accountability-center codes on invoice document numbers (e.g. B_SFP_... = code B). Names are configured in branches.ts.",
+    branches: branches.map((branch) => ({
+      code: branch.code,
+      name: branch.name,
+      aliases: branch.aliases,
+      allTimeInvoiceSales: round(totals.get(branch.code)?.sales ?? 0),
+      allTimeInvoices: totals.get(branch.code)?.invoices ?? 0,
+    })),
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** Posted invoice sales for one branch (by name, alias, or code). */
+export async function getSalesByBranch(
+  input?: { query?: string; branchCode?: string } & DatePeriodInput,
+): Promise<unknown> {
+  const resolved = resolveBranch({
+    query: input?.query,
+    branchCode: input?.branchCode,
+  });
+  if ("error" in resolved) return resolved;
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  let totalSales = 0;
+  let invoiceCount = 0;
+  const byBsMonth = new Map<
+    string,
+    { bsMonth: string; bsYear: number; sales: number; invoices: number }
+  >();
+
+  for (const entry of ledgerPayload.value ?? []) {
+    if (entry.documentType !== "Invoice") continue;
+    if (branchCodeFromDocument(entry.documentNo) !== resolved.code) continue;
+    if (!period.matches(entry.postingDate)) continue;
+
+    const sales = Number(entry.salesLcy ?? 0);
+    totalSales += sales;
+    invoiceCount += 1;
+
+    const date = parseDate(entry.postingDate);
+    const bs = date ? toBs(date) : null;
+    if (bs) {
+      const key = `${bs.year}-${bs.month}`;
+      const agg =
+        byBsMonth.get(key) ??
+        {
+          bsMonth: BS_MONTHS[bs.month] ?? String(bs.month + 1),
+          bsYear: bs.year,
+          sales: 0,
+          invoices: 0,
+        };
+      agg.sales += sales;
+      agg.invoices += 1;
+      byBsMonth.set(key, agg);
+    }
+  }
+
+  const monthly = [...byBsMonth.values()]
+    .map((row) => ({
+      ...row,
+      salesExcludingTax: round(row.sales),
+    }))
+    .sort((a, b) =>
+      a.bsYear === b.bsYear ? a.bsMonth.localeCompare(b.bsMonth) : a.bsYear - b.bsYear,
+    );
+
+  return {
+    currency: "NPR",
+    branchCode: resolved.code,
+    branchName: resolved.name,
+    period: period.label,
+    basis:
+      "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code, e.g. B_SFP_...",
+    totalSalesExcludingTax: round(totalSales),
+    invoiceCount,
+    byNepaliMonth: monthly,
+    _syncedAt: ledgerPayload._syncedAt,
   };
 }
 

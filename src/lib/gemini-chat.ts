@@ -165,6 +165,7 @@ Tool selection:
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
 - Sales by salesperson -> get_sales_by_salesperson.
+- Branch / depot sales (Saurabh Food: Bhairawa, Birgunj, Nepalgunj, etc.) -> get_sales_by_branch with query="Bhairawa" or branchCode="B". Invoice documents use codes like B_SFP_.... Use list_branches to show all codes. Do NOT say branch not found without calling get_sales_by_branch or list_branches first.
 - MR cheque receipts -> get_mr_records.
 - Blocked or overdue customers list -> get_customer_alerts.
 - Data freshness / last sync -> get_sync_status.

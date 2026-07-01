@@ -37,6 +37,8 @@ import {
   getOutstandingReceivables,
   getPaymentsSummary,
   getSalesBySalesperson,
+  getSalesByBranch,
+  listBranches,
   getSalesOrdersSummary,
   getSyncStatus,
   getTopCustomers,
@@ -488,6 +490,31 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description: "Optional product keyword filter.",
         },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "list_branches",
+    description:
+      "List branch/depot codes and names for the active company. Saurabh Food uses accountability-center codes on invoices (B_SFP_..., W_SFP_...). Use before get_sales_by_branch when the user asks about a branch by name.",
+    parameters: { type: SchemaType.OBJECT, properties: {} },
+  },
+  {
+    name: "get_sales_by_branch",
+    description:
+      "Posted invoice sales for one branch/depot by name or code. Saurabh Food: Bhairawa=B, Birgunj=S, Nepalgunj=D, Kathmandu=K, Butwal=W, etc. Uses ledger invoices (salesLcy), not sales orders. Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Branch name or alias, e.g. Bhairawa, Birgunj, Butwal.",
+        },
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Single-letter accountability code, e.g. B for Bhairawa.",
+        },
         ...periodToolProperties,
       },
     },
@@ -1046,6 +1073,18 @@ export async function executeTool(
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getSalesBySalesperson({
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
+        });
+        break;
+      case "list_branches":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await listBranches();
+        break;
+      case "get_sales_by_branch":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getSalesByBranch({
+          query: args.query as string | undefined,
+          branchCode: args.branchCode as string | undefined,
           ...periodArgs(args),
         });
         break;
