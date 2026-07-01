@@ -129,6 +129,17 @@ function normalizeTerm(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
+function termMatchesQuery(term: string, query: string): boolean {
+  if (!term) return false;
+  if (term.length <= 2) {
+    return new RegExp(
+      `\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      "i",
+    ).test(query);
+  }
+  return term.includes(query) || query.includes(term);
+}
+
 export function resolveBranch(input?: {
   query?: string;
   branchCode?: string;
@@ -170,7 +181,7 @@ export function resolveBranch(input?: {
   // Partial alias match (e.g. "bhair" -> Bhairawa)
   const partial = branches.filter((branch) => {
     const terms = [branch.name, branch.code, ...branch.aliases].map(normalizeTerm);
-    return terms.some((term) => term.includes(query) || query.includes(term));
+    return terms.some((term) => termMatchesQuery(term, query));
   });
 
   if (partial.length === 1) return partial[0];
