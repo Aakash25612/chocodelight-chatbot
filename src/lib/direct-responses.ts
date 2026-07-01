@@ -1,5 +1,5 @@
 import { formatAmount } from "./format";
-import { getMirror } from "./bc-mirror";
+import { loadCustomersPayload } from "./derived-customers";
 
 type Customer = {
   number?: string;
@@ -44,7 +44,7 @@ function isListAllCustomers(message: string): boolean {
 }
 
 async function listAllCustomers(): Promise<string> {
-  const data = (await getMirror("customers")) as MirrorPayload<Customer>;
+  const data = await loadCustomersPayload();
 
   if (data.error) return data.error;
 

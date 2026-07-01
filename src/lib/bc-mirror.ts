@@ -1,4 +1,5 @@
 import { getSupabaseAdmin } from "./supabase";
+import { getActiveCompany } from "./company-context";
 
 export type MirrorEntity =
   | "companies"
@@ -14,21 +15,47 @@ export type MirrorEntity =
 
 export async function getMirror(entityType: MirrorEntity): Promise<unknown> {
   const supabase = getSupabaseAdmin();
+  const company = getActiveCompany();
   const { data, error } = await supabase
     .from("bc_mirror")
     .select("payload, synced_at")
+    .eq("company", company)
     .eq("entity_type", entityType)
     .maybeSingle();
 
   if (error) throw error;
   if (!data) {
     return {
-      error: `No synced data for ${entityType}. Run BC sync from a machine with VPN access.`,
+      error: `No synced data for ${entityType} (company: ${company}). Run BC sync from a machine with VPN access.`,
       entityType,
     };
   }
 
-  return { ...(data.payload as object), _syncedAt: data.synced_at };
+  const payload = data.payload as {
+    chunked?: boolean;
+    chunks?: number;
+    value?: unknown[];
+  };
+
+  if (payload.chunked) {
+    const { data: chunks, error: chunkError } = await supabase
+      .from("bc_mirror_chunks")
+      .select("payload")
+      .eq("company", company)
+      .eq("entity_type", entityType)
+      .order("chunk_index", { ascending: true });
+
+    if (chunkError) throw chunkError;
+
+    return {
+      value: (chunks ?? []).flatMap(
+        (chunk) => ((chunk.payload as { value?: unknown[] }).value ?? []),
+      ),
+      _syncedAt: data.synced_at,
+    };
+  }
+
+  return { ...(payload as object), _syncedAt: data.synced_at };
 }
 
 export async function getMirrorCache(cacheKey: string): Promise<unknown | null> {
@@ -36,6 +63,7 @@ export async function getMirrorCache(cacheKey: string): Promise<unknown | null> 
   const { data, error } = await supabase
     .from("bc_mirror_cache")
     .select("payload, synced_at")
+    .eq("company", getActiveCompany())
     .eq("cache_key", cacheKey)
     .maybeSingle();
 
@@ -126,13 +154,23 @@ export async function getSyncStatus(): Promise<{
   lastFullSync: string | null;
 }> {
   const supabase = getSupabaseAdmin();
+  const company = getActiveCompany();
 
   const [{ data: mirrors }, { data: meta }, { count }] = await Promise.all([
-    supabase.from("bc_mirror").select("entity_type, synced_at, payload"),
-    supabase.from("bc_sync_meta").select("*").eq("key", "full_sync").maybeSingle(),
+    supabase
+      .from("bc_mirror")
+      .select("entity_type, synced_at, payload")
+      .eq("company", company),
+    supabase
+      .from("bc_sync_meta")
+      .select("*")
+      .eq("company", company)
+      .eq("key", "full_sync")
+      .maybeSingle(),
     supabase
       .from("bc_write_queue")
       .select("*", { count: "exact", head: true })
+      .eq("company", company)
       .eq("status", "pending"),
   ]);
 
@@ -159,7 +197,7 @@ export async function queueWrite(
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("bc_write_queue")
-    .insert({ action_type: actionType, payload })
+    .insert({ action_type: actionType, payload, company: getActiveCompany() })
     .select("id")
     .single();
 

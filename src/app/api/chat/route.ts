@@ -10,6 +10,8 @@ import {
 import { formatGeminiError, runGeminiChat } from "@/lib/gemini-chat";
 import { geminiConfig } from "@/lib/config";
 import { getDirectResponse } from "@/lib/direct-responses";
+import { normalizeCompanyKey } from "@/lib/companies";
+import { runWithCompany } from "@/lib/company-context";
 
 export const maxDuration = 60;
 
@@ -43,16 +45,31 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       messages: ChatMessage[];
       conversationId?: string;
+      company?: string;
     };
     const { messages, conversationId: existingConversationId } = body;
+    const company = normalizeCompanyKey(body.company);
 
     if (!messages?.length) {
       return NextResponse.json({ error: "Messages required" }, { status: 400 });
     }
 
-    let conversationId = existingConversationId;
+    return await runWithCompany(company, () =>
+      handleChat(messages, existingConversationId),
+    );
+  } catch (error) {
+    const { message, status } = formatGeminiError(error);
+    return NextResponse.json({ error: message }, { status });
+  }
+}
 
-    if (isSupabaseConfigured()) {
+async function handleChat(
+  messages: ChatMessage[],
+  existingConversationId?: string,
+) {
+  let conversationId = existingConversationId;
+
+  if (isSupabaseConfigured()) {
       if (!conversationId) {
         const firstUserMsg = messages.find((m) => m.role === "user")?.content;
         const title = firstUserMsg?.slice(0, 60) ?? "New chat";
@@ -110,15 +127,11 @@ export async function POST(request: Request) {
       await saveMessage(conversationId, "assistant", text, toolCallsUsed);
     }
 
-    return NextResponse.json({
-      message: text,
-      toolCallsUsed,
-      conversationId,
-    });
-  } catch (error) {
-    const { message, status } = formatGeminiError(error);
-    return NextResponse.json({ error: message }, { status });
-  }
+  return NextResponse.json({
+    message: text,
+    toolCallsUsed,
+    conversationId,
+  });
 }
 
 export async function GET(request: Request) {

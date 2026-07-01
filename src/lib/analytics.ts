@@ -1,5 +1,6 @@
 import { getMirror } from "./bc-mirror";
 import { formatAmount } from "./format";
+import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
@@ -144,7 +145,7 @@ export async function getReceivablesAging(
 ): Promise<unknown> {
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
-    getMirror("customers") as Promise<MirrorPayload<Customer>>,
+    loadCustomersPayload(),
   ]);
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
@@ -285,7 +286,7 @@ function normalizeSearchText(value: string): string {
  * Find customers by name, number, or phone. Use instead of dumping all customers.
  */
 export async function searchCustomers(query: string): Promise<unknown> {
-  const payload = (await getMirror("customers")) as MirrorPayload<Customer>;
+  const payload = await loadCustomersPayload();
   if (payload.error) return { error: payload.error };
 
   const term = normalizeSearchText(query);
@@ -324,6 +325,7 @@ export async function searchCustomers(query: string): Promise<unknown> {
     query,
     matchCount: matches.length,
     customers: results,
+    ...(payload.source ? { source: payload.source, note: payload.note } : {}),
     _syncedAt: payload._syncedAt,
   };
 }
@@ -339,7 +341,7 @@ export async function getCustomerStatement(input?: {
 }): Promise<unknown> {
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
-    getMirror("customers") as Promise<MirrorPayload<Customer>>,
+    loadCustomersPayload(),
   ]);
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 

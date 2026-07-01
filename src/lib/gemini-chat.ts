@@ -5,6 +5,8 @@ import {
 } from "@google/generative-ai";
 import { geminiConfig } from "./config";
 import { executeTool, toolDeclarations } from "./tools";
+import { getCompany } from "./companies";
+import { getActiveCompany } from "./company-context";
 
 const DEFAULT_FALLBACK_MODELS = [
   "gemini-3.1-flash-lite",
@@ -78,7 +80,7 @@ async function runSingleModelChat(
   const genAI = new GoogleGenerativeAI(geminiConfig.apiKey);
   const model = genAI.getGenerativeModel({
     model: modelName,
-    systemInstruction: SYSTEM_PROMPT,
+    systemInstruction: buildSystemPrompt(),
     tools: [{ functionDeclarations: toolDeclarations }],
   });
 
@@ -114,9 +116,14 @@ async function runSingleModelChat(
   };
 }
 
-const SYSTEM_PROMPT = `You are ChocoDelight BC Assistant, an AI chatbot for the ChocoDelight Business Central data, a company based in Nepal. Currency is NPR.
+function buildSystemPrompt(): string {
+  const company = getCompany(getActiveCompany());
+  return `You are the ${company.displayName} BC Assistant, an AI chatbot for the ${company.displayName} Business Central data, a company based in Nepal. Currency is NPR. All data you access is scoped to ${company.displayName}; never mix in data from other companies.
 
-You help users query and manage business data including:
+${SYSTEM_PROMPT_BODY}`;
+}
+
+const SYSTEM_PROMPT_BODY = `You help users query and manage business data including:
 - Companies, customers, customer ledger entries
 - Items, units of measure, salespersons, MR records
 - Sales orders (create, lock, post)

@@ -1,12 +1,37 @@
+import { getCompany } from "./companies";
+import { getActiveCompany } from "./company-context";
+
+/** Connection settings for the request-scoped active company. */
+export function getBcConfig() {
+  return getCompany(getActiveCompany());
+}
+
+/**
+ * Back-compat accessor. Resolves to the active company's settings.
+ * Prefer `getBcConfig()` in new code.
+ */
 export const bcConfig = {
-  baseUrl: process.env.BC_BASE_URL ?? "http://10.11.29.42:8848/ChocoDelight",
-  apiPath: "/api/biz/customapi/v1.0",
-  odataPath: "/ODataV4",
-  companyId:
-    process.env.BC_COMPANY_ID ?? "058005c0-1940-ef11-aed1-2cea7fe9e541",
-  odataCompany: process.env.BC_ODATA_COMPANY ?? "Choco Delight Pvt. Ltd",
-  username: process.env.BC_USERNAME ?? "klnav\\mobileapp",
-  password: process.env.BC_PASSWORD ?? "",
+  get baseUrl() {
+    return getBcConfig().baseUrl;
+  },
+  get apiPath() {
+    return getBcConfig().apiPath;
+  },
+  get odataPath() {
+    return getBcConfig().odataPath;
+  },
+  get companyId() {
+    return getBcConfig().companyId;
+  },
+  get odataCompany() {
+    return getBcConfig().odataCompany;
+  },
+  get username() {
+    return getBcConfig().username;
+  },
+  get password() {
+    return getBcConfig().password;
+  },
 };
 
 export const geminiConfig = {
@@ -24,15 +49,17 @@ export const syncConfig = {
 };
 
 export function getApiBase(): string {
-  return `${bcConfig.baseUrl}${bcConfig.apiPath}`;
+  const config = getBcConfig();
+  return `${config.baseUrl}${config.apiPath}`;
 }
 
 export function getODataBase(): string {
-  return `${bcConfig.baseUrl}${bcConfig.odataPath}`;
+  const config = getBcConfig();
+  return `${config.baseUrl}${config.odataPath}`;
 }
 
 export function getCompanyPath(suffix = ""): string {
-  return `${getApiBase()}/companies(${bcConfig.companyId})${suffix}`;
+  return `${getApiBase()}/companies(${getBcConfig().companyId})${suffix}`;
 }
 
 export function getChatApiUrl(): string {

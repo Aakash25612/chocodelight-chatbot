@@ -1,6 +1,9 @@
 import { bcApi } from "./bc-client";
 import { getSupabaseAdmin } from "./supabase";
 import type { MirrorEntity } from "./bc-mirror";
+import { listCompanies, type CompanyKey } from "./companies";
+import { getActiveCompany, runWithCompany } from "./company-context";
+import { buildDerivedCustomersPayload } from "./derived-customers";
 
 const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
   { type: "companies", fetch: () => bcApi.getCompanies() },
@@ -15,32 +18,142 @@ const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
   { type: "api_catalog", fetch: () => bcApi.getApiCatalog() },
 ];
 
-export async function syncBcToSupabase(): Promise<{
+const MAX_INLINE_PAYLOAD_BYTES = 8 * 1024 * 1024;
+const MIRROR_CHUNK_SIZE = 5000;
+
+function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
+  if (
+    type !== "custLedgEntries" ||
+    !payload ||
+    typeof payload !== "object" ||
+    !Array.isArray((payload as { value?: unknown[] }).value)
+  ) {
+    return payload;
+  }
+
+  return {
+    value: (payload as { value: Record<string, unknown>[] }).value.map((entry) => ({
+      open: entry.open,
+      documentType: entry.documentType,
+      postingDate: entry.postingDate,
+      dueDate: entry.dueDate,
+      salesLcy: entry.salesLcy,
+      amountLcy: entry.amountLcy,
+      remainingAmount: entry.remainingAmount,
+      customerNo: entry.customerNo,
+      sellToCustomerNo: entry.sellToCustomerNo,
+      documentNo: entry.documentNo,
+      description: entry.description,
+    })),
+  };
+}
+
+function payloadBytes(payload: unknown): number {
+  return Buffer.byteLength(JSON.stringify(payload));
+}
+
+async function upsertMirrorPayload(input: {
+  company: CompanyKey;
+  type: MirrorEntity;
+  payload: unknown;
+  syncedAt: string;
+}): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const payload = input.payload as { value?: unknown[] };
+
+  if (
+    Array.isArray(payload.value) &&
+    payload.value.length > MIRROR_CHUNK_SIZE &&
+    payloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES
+  ) {
+    const chunks: Array<{ value: unknown[] }> = [];
+    for (let i = 0; i < payload.value.length; i += MIRROR_CHUNK_SIZE) {
+      chunks.push({ value: payload.value.slice(i, i + MIRROR_CHUNK_SIZE) });
+    }
+
+    const { error: markerError } = await supabase.from("bc_mirror").upsert({
+      company: input.company,
+      entity_type: input.type,
+      payload: {
+        chunked: true,
+        chunks: chunks.length,
+        totalCount: payload.value.length,
+      },
+      synced_at: input.syncedAt,
+    });
+    if (markerError) throw markerError;
+
+    const { error: deleteError } = await supabase
+      .from("bc_mirror_chunks")
+      .delete()
+      .eq("company", input.company)
+      .eq("entity_type", input.type);
+    if (deleteError) throw deleteError;
+
+    const rows = chunks.map((chunk, index) => ({
+      company: input.company,
+      entity_type: input.type,
+      chunk_index: index,
+      payload: chunk,
+      synced_at: input.syncedAt,
+    }));
+
+    for (let i = 0; i < rows.length; i += 25) {
+      const { error } = await supabase
+        .from("bc_mirror_chunks")
+        .upsert(rows.slice(i, i + 25));
+      if (error) throw error;
+    }
+
+    return;
+  }
+
+  const { error } = await supabase.from("bc_mirror").upsert({
+    company: input.company,
+    entity_type: input.type,
+    payload: input.payload,
+    synced_at: input.syncedAt,
+  });
+  if (error) throw error;
+}
+
+type CompanySyncResult = {
+  company: CompanyKey;
   synced: string[];
   errors: { entity: string; error: string }[];
-}> {
+};
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") return JSON.stringify(error);
+  return String(error);
+}
+
+async function syncCompany(): Promise<CompanySyncResult> {
   const supabase = getSupabaseAdmin();
+  const company = getActiveCompany();
   const synced: string[] = [];
   const errors: { entity: string; error: string }[] = [];
 
   for (const { type, fetch } of READ_ENTITIES) {
     try {
-      const payload = await fetch();
+      const payload = compactMirrorPayload(type, await fetch());
       const recordCount = Array.isArray((payload as { value?: unknown[] }).value)
         ? (payload as { value: unknown[] }).value.length
         : 1;
 
-      const { error } = await supabase.from("bc_mirror").upsert({
-        entity_type: type,
+      const syncedAt = new Date().toISOString();
+      await upsertMirrorPayload({
+        company,
+        type,
         payload,
-        synced_at: new Date().toISOString(),
+        syncedAt,
       });
 
-      if (error) throw error;
-
       await supabase.from("bc_sync_meta").upsert({
+        company,
         key: type,
-        last_synced_at: new Date().toISOString(),
+        last_synced_at: syncedAt,
         record_count: recordCount,
         status: "ok",
         error: null,
@@ -48,9 +161,10 @@ export async function syncBcToSupabase(): Promise<{
 
       synced.push(type);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       errors.push({ entity: type, error: message });
       await supabase.from("bc_sync_meta").upsert({
+        company,
         key: type,
         last_synced_at: new Date().toISOString(),
         record_count: 0,
@@ -60,7 +174,42 @@ export async function syncBcToSupabase(): Promise<{
     }
   }
 
+  if (!synced.includes("customers")) {
+    try {
+      const derived = await buildDerivedCustomersPayload();
+      const recordCount = derived.value?.length ?? 0;
+      if (recordCount > 0) {
+        const syncedAt = new Date().toISOString();
+        await upsertMirrorPayload({
+          company,
+          type: "customers",
+          payload: derived,
+          syncedAt,
+        });
+        await supabase.from("bc_sync_meta").upsert({
+          company,
+          key: "customers",
+          last_synced_at: syncedAt,
+          record_count: recordCount,
+          status: "ok",
+          error: "derived_from_mr_and_ledger",
+        });
+        synced.push("customers");
+        errors.splice(
+          errors.findIndex((row) => row.entity === "customers"),
+          1,
+        );
+      }
+    } catch (error) {
+      const message = errorMessage(error);
+      if (!errors.some((row) => row.entity === "customers")) {
+        errors.push({ entity: "customers", error: message });
+      }
+    }
+  }
+
   await supabase.from("bc_sync_meta").upsert({
+    company,
     key: "full_sync",
     last_synced_at: new Date().toISOString(),
     record_count: synced.length,
@@ -68,7 +217,29 @@ export async function syncBcToSupabase(): Promise<{
     error: errors.length ? JSON.stringify(errors) : null,
   });
 
-  return { synced, errors };
+  return { company, synced, errors };
+}
+
+export async function syncBcToSupabase(): Promise<{
+  companies: CompanySyncResult[];
+  synced: string[];
+  errors: { company: CompanyKey; entity: string; error: string }[];
+}> {
+  const companies: CompanySyncResult[] = [];
+
+  for (const config of listCompanies()) {
+    const result = await runWithCompany(config.key, () => syncCompany());
+    companies.push(result);
+  }
+
+  const synced = companies.flatMap((c) =>
+    c.synced.map((entity) => `${c.company}:${entity}`),
+  );
+  const errors = companies.flatMap((c) =>
+    c.errors.map((e) => ({ company: c.company, ...e })),
+  );
+
+  return { companies, synced, errors };
 }
 
 async function processQueueItem(
@@ -100,6 +271,7 @@ async function processQueueItem(
         );
         const cacheKey = `pending_items:${payload.customerNo}`;
         await supabase.from("bc_mirror_cache").upsert({
+          company: getActiveCompany(),
           cache_key: cacheKey,
           payload: result,
           synced_at: new Date().toISOString(),
@@ -125,7 +297,7 @@ async function processQueueItem(
       })
       .eq("id", id);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     await supabase
       .from("bc_write_queue")
       .update({
@@ -144,7 +316,7 @@ export async function processWriteQueue(limit = 20): Promise<{
   const supabase = getSupabaseAdmin();
   const { data: pending, error } = await supabase
     .from("bc_write_queue")
-    .select("id, action_type, payload")
+    .select("id, action_type, payload, company")
     .eq("status", "pending")
     .order("created_at", { ascending: true })
     .limit(limit);
@@ -155,10 +327,12 @@ export async function processWriteQueue(limit = 20): Promise<{
   let failed = 0;
 
   for (const item of pending ?? []) {
-    await processQueueItem(
-      item.id,
-      item.action_type,
-      item.payload as Record<string, unknown>,
+    await runWithCompany(item.company, () =>
+      processQueueItem(
+        item.id,
+        item.action_type,
+        item.payload as Record<string, unknown>,
+      ),
     );
     const { data: updated } = await supabase
       .from("bc_write_queue")

@@ -79,15 +79,27 @@ Users open your URL — no VPN required.
 
 4. Deploy. Keep `npm run sync:bc` on a VPN machine on a schedule.
 
+## Multiple companies
+
+The app serves more than one Business Central company (currently **Choco Delight** and **Saurabh Food**). Users pick the company from the header dropdown; every request is scoped to that company.
+
+- Each company has its own connection settings in env (`BC_*` for Choco Delight, `BC_SAURABHFOOD_*` for Saurabh Food) — see `.env.example`.
+- Mirror data is stored per company: `bc_mirror`, `bc_mirror_cache`, `bc_sync_meta`, and `bc_write_queue` all have a `company` column (see `supabase/migrations/002_multi_company.sql`).
+- `npm run sync:bc` mirrors **all** configured companies in one run.
+
+To add another company later: add an entry to `src/lib/companies.ts`, add its `BC_*` env vars, and add it to the `COMPANIES` list in `src/components/ChatInterface.tsx`.
+
+Note: Saurabh Food reads (customers, ledger, items, etc.) work like Choco Delight. Writes/posting are disabled by default (`BC_SAURABHFOOD_WRITES_ENABLED=false`) because the Postman POST examples target a test DB; set the production OData company name and enable when confirmed.
+
 ## Supabase tables
 
 | Table | Purpose |
 |-------|---------|
 | `conversations`, `messages`, `api_logs` | Chat history |
-| `bc_mirror` | Synced BC read data |
-| `bc_mirror_cache` | Cached dynamic queries |
-| `bc_write_queue` | Pending BC write operations |
-| `bc_sync_meta` | Sync status |
+| `bc_mirror` | Synced BC read data (per company) |
+| `bc_mirror_cache` | Cached dynamic queries (per company) |
+| `bc_write_queue` | Pending BC write operations (per company) |
+| `bc_sync_meta` | Sync status (per company) |
 
 Dashboard: https://supabase.com/dashboard/project/cparkzeqiufozpjrxvii
 

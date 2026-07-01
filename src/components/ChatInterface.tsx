@@ -30,9 +30,27 @@ type HealthStatus = {
 
 const STORAGE_KEY = "chocodelight-chat-history:v1";
 const REPORT_STORAGE_PREFIX = "chocodelight-report:";
+const COMPANY_STORAGE_KEY = "chocodelight-active-company";
 
-const WELCOME =
-  "Hello! I'm your **ChocoDelight BC Assistant**. Ask me about customers, items, sales orders, ledger entries, and more.\n\nData is served from **Supabase** so you do not need VPN on this device.\n\nWhat would you like to do?";
+const COMPANIES = [
+  { key: "chocodelight", label: "Choco Delight", short: "CD" },
+  { key: "saurabhfood", label: "Saurabh Food", short: "SF" },
+] as const;
+
+type CompanyKey = (typeof COMPANIES)[number]["key"];
+
+const DEFAULT_COMPANY: CompanyKey = "chocodelight";
+
+function getCompanyMeta(key: CompanyKey) {
+  return COMPANIES.find((c) => c.key === key) ?? COMPANIES[0];
+}
+
+function welcomeFor(key: CompanyKey): string {
+  const label = getCompanyMeta(key).label;
+  return `Hello! I'm your **${label} BC Assistant**. Ask me about customers, items, sales orders, ledger entries, and more.\n\nData is served from **Supabase** so you do not need VPN on this device.\n\nWhat would you like to do?`;
+}
+
+const WELCOME = welcomeFor(DEFAULT_COMPANY);
 
 const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
@@ -110,11 +128,12 @@ export default function ChatInterface() {
   const [loading, setLoading] = useState(false);
   const [reportMode, setReportMode] = useState(false);
   const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [company, setCompany] = useState<CompanyKey>(DEFAULT_COMPANY);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const loadHealth = useCallback(async () => {
+  const loadHealth = useCallback(async (companyKey: CompanyKey) => {
     try {
-      const res = await fetch("/api/health");
+      const res = await fetch(`/api/health?company=${companyKey}`);
       const data = await readJsonResponse<HealthStatus>(res);
       setHealth(data);
     } catch {
@@ -126,10 +145,36 @@ export default function ChatInterface() {
     const storedChats = readLocalChats();
     setChats(storedChats);
     setSidebarOpen(window.innerWidth >= 768);
-    loadHealth();
-    const interval = setInterval(loadHealth, 30000);
+    const storedCompany = window.localStorage.getItem(
+      COMPANY_STORAGE_KEY,
+    ) as CompanyKey | null;
+    const initialCompany =
+      storedCompany && COMPANIES.some((c) => c.key === storedCompany)
+        ? storedCompany
+        : DEFAULT_COMPANY;
+    setCompany(initialCompany);
+  }, []);
+
+  useEffect(() => {
+    // Polling an external system (health endpoint) is an allowed effect use.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadHealth(company);
+    const interval = setInterval(() => loadHealth(company), 30000);
     return () => clearInterval(interval);
-  }, [loadHealth]);
+  }, [loadHealth, company]);
+
+  function switchCompany(next: CompanyKey) {
+    if (next === company) return;
+    setCompany(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(COMPANY_STORAGE_KEY, next);
+    }
+    setCurrentChatId(null);
+    setApiConversationId(null);
+    setMessages([{ role: "assistant", content: welcomeFor(next) }]);
+    setInput("");
+    setReportMode(false);
+  }
 
   useEffect(() => {
     setTimeout(() => {
@@ -154,7 +199,7 @@ export default function ChatInterface() {
   function startNewChat() {
     setCurrentChatId(null);
     setApiConversationId(null);
-    setMessages([WELCOME_MESSAGE]);
+    setMessages([{ role: "assistant", content: welcomeFor(company) }]);
     setInput("");
     setReportMode(false);
     if (typeof window !== "undefined" && window.innerWidth < 768) {
@@ -190,7 +235,7 @@ export default function ChatInterface() {
     const previousMessages =
       messages.length === 1 &&
       messages[0].role === "assistant" &&
-      messages[0].content === WELCOME
+      messages[0].content.startsWith("Hello! I'm your")
         ? []
         : messages;
     const chatId = currentChatId ?? createId();
@@ -233,6 +278,7 @@ export default function ChatInterface() {
         body: JSON.stringify({
           messages: baseMessages,
           conversationId: apiConversationId,
+          company,
         }),
       });
 
@@ -292,7 +338,7 @@ export default function ChatInterface() {
     const res = await fetch("/api/report", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, company }),
     });
 
     const data = await readJsonResponse<{
@@ -414,34 +460,52 @@ export default function ChatInterface() {
                 <span className="mt-1 block h-0.5 w-4 bg-current" />
               </button>
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-zinc-950 text-xs font-semibold text-white shadow-sm sm:h-10 sm:w-10 sm:text-sm">
-                CD
+                {getCompanyMeta(company).short}
               </div>
               <div className="min-w-0">
                 <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-950 sm:text-lg">
-                  ChocoDelight BC Assistant
+                  {getCompanyMeta(company).label} BC Assistant
                 </h1>
                 <p className="truncate text-xs text-zinc-500 sm:text-sm">
                   Gemini, Business Central, Supabase
                 </p>
               </div>
             </div>
-            {health && (
-              <div className="hidden items-center gap-3 text-xs sm:flex">
-                <StatusPill
-                  label="BC Data"
-                  ok={health.bcApi.reachable}
-                  detail={
-                    health.mode === "supabase_mirror"
-                      ? health.bcApi.reachable
-                        ? `${health.bcApi.entities ?? 0} synced`
-                        : "Awaiting sync"
-                      : health.bcApi.reachable
-                        ? `${health.bcApi.companies} companies online`
-                        : health.bcApi.error?.slice(0, 40) ?? "Offline"
-                  }
-                />
-              </div>
-            )}
+            <div className="flex items-center gap-3">
+              <label className="sr-only" htmlFor="company-select">
+                Company
+              </label>
+              <select
+                id="company-select"
+                value={company}
+                onChange={(e) => switchCompany(e.target.value as CompanyKey)}
+                className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 sm:text-sm"
+                aria-label="Select company"
+              >
+                {COMPANIES.map((c) => (
+                  <option key={c.key} value={c.key}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              {health && (
+                <div className="hidden items-center gap-3 text-xs sm:flex">
+                  <StatusPill
+                    label="BC Data"
+                    ok={health.bcApi.reachable}
+                    detail={
+                      health.mode === "supabase_mirror"
+                        ? health.bcApi.reachable
+                          ? `${health.bcApi.entities ?? 0} synced`
+                          : "Awaiting sync"
+                        : health.bcApi.reachable
+                          ? `${health.bcApi.companies} companies online`
+                          : health.bcApi.error?.slice(0, 40) ?? "Offline"
+                    }
+                  />
+                </div>
+              )}
+            </div>
           </div>
         </header>
 

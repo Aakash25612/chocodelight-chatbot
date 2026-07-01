@@ -1,5 +1,6 @@
 import { getMirror, getSyncStatus } from "./bc-mirror";
 import { searchCustomers } from "./analytics";
+import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
@@ -103,7 +104,7 @@ async function loadLedger(): Promise<MirrorPayload<LedgerEntry>> {
 }
 
 async function loadCustomers(): Promise<MirrorPayload<Customer>> {
-  return (await getMirror("customers")) as MirrorPayload<Customer>;
+  return (await loadCustomersPayload()) as MirrorPayload<Customer>;
 }
 
 async function loadItems(): Promise<MirrorPayload<Item>> {
@@ -286,6 +287,7 @@ export async function getOutstandingReceivables(input?: {
   const limit = Math.min(input?.limit ?? 15, 50);
   const customersPayload = await loadCustomers();
   if (customersPayload.error) return { error: customersPayload.error };
+  const customerSource = (customersPayload as { source?: string }).source;
 
   const ranked = (customersPayload.value ?? [])
     .map((customer) => {
@@ -317,7 +319,9 @@ export async function getOutstandingReceivables(input?: {
     asOf: new Date().toISOString().slice(0, 10),
     rankBy: "balance",
     basis:
-      "Customer master balance (matches ERP/Power BI outstanding report). overdueAmount = past due; notYetDueAmount = owed but payment deadline not reached.",
+      customerSource === "derived_mr_ledger"
+        ? "Derived customer balances from open ledger remaining amounts; names from MR records. overdueAmount = open entries past due date."
+        : "Customer master balance (matches ERP/Power BI outstanding report). overdueAmount = past due; notYetDueAmount = owed but payment deadline not reached.",
     totals: { totalOutstanding, totalOverdue, totalNotYetDue },
     customerCount: ranked.length,
     customers: ranked.slice(0, limit).map((row, index) => ({
