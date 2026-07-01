@@ -1,11 +1,4 @@
 import { readFileSync, existsSync } from "node:fs";
-import { runWithCompany } from "../src/lib/company-context";
-import { getMirror } from "../src/lib/bc-mirror";
-import {
-  buildBranchSalesCache,
-  saveBranchSalesCache,
-} from "../src/lib/branch-sales-cache";
-import { listCompanies } from "../src/lib/companies";
 
 function loadEnv(file: string) {
   if (!existsSync(file)) return;
@@ -30,6 +23,13 @@ type LedgerEntry = {
 };
 
 async function main() {
+  const { runWithCompany } = await import("../src/lib/company-context");
+  const { getMirror } = await import("../src/lib/bc-mirror");
+  const { buildBranchSalesCache, saveBranchSalesCache } = await import(
+    "../src/lib/branch-sales-cache"
+  );
+  const { listCompanies } = await import("../src/lib/companies");
+
   for (const config of listCompanies()) {
     await runWithCompany(config.key, async () => {
       const raw = (await getMirror("custLedgEntries")) as {
