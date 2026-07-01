@@ -232,14 +232,19 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_receivables_aging",
     description:
-      "Aging buckets for open invoices by days past due (Not due, 1-30, 31-60, 61-90, Over 90 days). Use for overdue-only questions, 'X days payment pending', or aging analysis — NOT for ranking who owes the most total (use get_outstanding_receivables). Also returns topCustomersByBalance with overdue vs not-yet-due split.",
+      "Aging for open invoice balances. Default ageBy=due_date for overdue/past-due questions. Use ageBy=posting_date for 'outstanding above X days' / 'X days since invoice' (days since posting date). Due-date buckets: Not due, 1-30, 31-60, 61-90, Over 90 days overdue. NOT for who owes the most total (use get_outstanding_receivables).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         minDaysOverdue: {
           type: SchemaType.NUMBER,
           description:
-            "Optional. Only include invoices overdue by at least this many days, e.g. 90 for '90 days payment pending'.",
+            "Minimum days threshold, e.g. 90 for 'above 90 days'. Applied to ageBy basis.",
+        },
+        ageBy: {
+          type: SchemaType.STRING,
+          description:
+            "due_date (payment overdue) or posting_date (days since invoice). Default due_date unless user asks outstanding above X days / since invoice.",
         },
       },
     },
@@ -938,11 +943,16 @@ export async function executeTool(
         if (!useSupabaseMirror) {
           return { error: "Receivables aging requires Supabase mirror mode." };
         }
-        result = await getReceivablesAging(
-          typeof args.minDaysOverdue === "number"
-            ? args.minDaysOverdue
-            : undefined,
-        );
+        result = await getReceivablesAging({
+          minDays:
+            typeof args.minDaysOverdue === "number"
+              ? args.minDaysOverdue
+              : undefined,
+          ageBy:
+            args.ageBy === "posting_date" || args.ageBy === "due_date"
+              ? args.ageBy
+              : undefined,
+        });
         break;
       case "get_outstanding_receivables":
         if (!useSupabaseMirror) {

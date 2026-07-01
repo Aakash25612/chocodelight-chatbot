@@ -87,14 +87,20 @@ function parseMinDaysOverdue(message: string): number | undefined {
   const explicit = message.match(
     /\b(?:above|over|more than|>=?)\s*(\d+)\s*days?\b/,
   );
-  if (explicit) {
-    const days = Number(explicit[1]);
-    return days >= 90 ? 91 : days;
-  }
-  if (/\b90\+?\s*days?\b|\babove\s+90\b|\bover\s+90\b/.test(message)) {
-    return 91;
-  }
+  if (explicit) return Number(explicit[1]);
+  if (/\b90\b/.test(message) && /\b(day|days)\b/.test(message)) return 90;
   return undefined;
+}
+
+function resolveReceivablesAgeBy(message: string): "due_date" | "posting_date" {
+  if (
+    /\b(overdue|past due|late payment|payment pending|due date|after due|days overdue)\b/.test(
+      message,
+    )
+  ) {
+    return "due_date";
+  }
+  return "posting_date";
 }
 
 async function formatReceivablesResponse(
@@ -102,59 +108,80 @@ async function formatReceivablesResponse(
   normalized: string,
 ): Promise<string> {
   const minDays = parseMinDaysOverdue(normalized);
-  const data = (await getReceivablesAging(minDays)) as {
+  const ageBy = resolveReceivablesAgeBy(normalized);
+  const data = (await getReceivablesAging({ minDays, ageBy })) as {
     error?: string;
     asOf?: string;
+    ageBy?: "due_date" | "posting_date";
+    basis?: string;
     totalOutstanding?: number;
     totalOverdue?: number;
     totalNotYetDue?: number;
     matchingOverdueTotal?: number;
-    filterDaysOverdue?: number;
-    buckets?: Array<{ bucket: string; count: number; amount: number }>;
+    matchingInvoiceCount?: number;
+    filterMinDays?: number;
     overdueEntries?: Array<{
       customerNo: string;
       name: string;
       documentNo: string;
-      dueDate: string;
-      daysOverdue: number;
+      referenceDate: string;
+      daysAged: number;
+      daysPastDue?: number;
       remaining: number;
     }>;
-    topOverdueCustomers?: Array<{
-      customerNo: string;
-      name: string;
-      overdue: number;
-      entries: number;
-    }>;
+    buckets?: Array<{ bucket: string; count: number; amount: number }>;
     _syncedAt?: string;
   };
 
   if (data.error) return data.error;
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
+  const ageLabel =
+    ageBy === "posting_date"
+      ? "invoice age (days since posting)"
+      : "days past due date";
 
   if (minDays) {
+    const entryCount = data.matchingInvoiceCount ?? data.overdueEntries?.length ?? 0;
     const lines = [
-      `**Outstanding above ${minDays === 91 ? 90 : minDays} days** — ${companyLabel}${formatSync(data._syncedAt)}`,
+      `**Outstanding above ${minDays} days** — ${companyLabel}${formatSync(data._syncedAt)}`,
       "",
-      `| Metric | Amount (NPR) |`,
-      `|---|---:|`,
-      `| Open invoices past due threshold | **${formatAmount(data.matchingOverdueTotal)}** |`,
+      `| Metric | Amount (NPR) | Invoices |`,
+      `|---|---:|---:|`,
+      `| Open balance (${ageLabel} ≥ ${minDays} days) | **${formatAmount(data.matchingOverdueTotal)}** | ${entryCount} |`,
       "",
-      `Basis: Open customer ledger invoices aged by **due date** (not invoice date).`,
+      data.basis ?? "",
       `As of: ${data.asOf ?? "latest sync"}.`,
     ];
 
-    const topEntries = data.overdueEntries?.slice(0, 10) ?? [];
+    if (ageBy === "posting_date") {
+      const dueDateTotal = (
+        (await getReceivablesAging({
+          minDays,
+          ageBy: "due_date",
+        })) as { matchingOverdueTotal?: number }
+      ).matchingOverdueTotal;
+      lines.push(
+        "",
+        `Note: By **payment due date** (overdue only), the same filter is **${formatAmount(dueDateTotal)}** — lower because many old invoices are still within payment terms.`,
+      );
+    }
+
+    const topEntries = [...(data.overdueEntries ?? [])]
+      .sort((a, b) => b.remaining - a.remaining)
+      .slice(0, 10);
     if (topEntries.length > 0) {
+      const dateCol = ageBy === "posting_date" ? "Invoice date" : "Due date";
       lines.push(
         "",
         "### Top open invoices",
         "",
-        "| Customer | Invoice | Due date | Days overdue | Amount (NPR) |",
+        `| Customer | Invoice | ${dateCol} | Days | Amount (NPR) |`,
         "|---|---|---|---:|---:|",
-        ...topEntries.map(
-          (row) =>
-            `| ${escapeCell(row.name || row.customerNo)} | ${row.documentNo} | ${row.dueDate} | ${row.daysOverdue} | ${formatAmount(row.remaining)} |`,
+        ...topEntries.map((row) =>
+          ageBy === "posting_date"
+            ? `| ${escapeCell(row.name || row.customerNo)} | ${row.documentNo} | ${row.referenceDate} | ${row.daysAged} since invoice${row.daysPastDue != null && row.daysPastDue > 0 ? ` (${row.daysPastDue} overdue)` : ""} | ${formatAmount(row.remaining)} |`
+            : `| ${escapeCell(row.name || row.customerNo)} | ${row.documentNo} | ${row.referenceDate} | ${row.daysAged} overdue | ${formatAmount(row.remaining)} |`,
         ),
       );
     }
@@ -181,7 +208,9 @@ async function formatReceivablesResponse(
     ),
   ];
 
-  const over90 = data.buckets?.find((row) => row.bucket === "Over 90 days");
+  const over90 = data.buckets?.find((row) =>
+    /over 90/i.test(row.bucket),
+  );
   if (over90 && !/\b90\b/.test(normalized)) {
     lines.push(
       "",

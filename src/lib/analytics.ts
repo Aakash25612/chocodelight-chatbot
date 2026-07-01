@@ -148,12 +148,26 @@ export async function getSalesSummary(): Promise<unknown> {
 }
 
 /**
- * Receivables aging based on open invoice entries and days past due date.
- * Use for overdue / payment-pending questions, e.g. "90 days payment pending".
+ * Receivables aging on open invoice entries.
+ * - due_date: days past payment due date (classic overdue aging)
+ * - posting_date: days since invoice posting date ("90 days since now")
  */
+export type ReceivablesAgeBy = "due_date" | "posting_date";
+
+export type ReceivablesAgingInput = {
+  minDays?: number;
+  /** Default due_date for overdue questions; posting_date for "X days since invoice". */
+  ageBy?: ReceivablesAgeBy;
+};
+
 export async function getReceivablesAging(
-  minDaysOverdue?: number,
+  input?: number | ReceivablesAgingInput,
 ): Promise<unknown> {
+  const options: ReceivablesAgingInput =
+    typeof input === "number" ? { minDays: input } : (input ?? {});
+  const minDays = options.minDays;
+  const ageBy = options.ageBy ?? "due_date";
+
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
     loadCustomersPayload(),
@@ -168,13 +182,21 @@ export async function getReceivablesAging(
   }
 
   const now = new Date();
-  const bucketDefs = [
-    { key: "current", label: "Not due", min: -Infinity, max: 0 },
-    { key: "1-30", label: "1-30 days", min: 1, max: 30 },
-    { key: "31-60", label: "31-60 days", min: 31, max: 60 },
-    { key: "61-90", label: "61-90 days", min: 61, max: 90 },
-    { key: "90+", label: "Over 90 days", min: 91, max: Infinity },
-  ] as const;
+  const bucketDefs =
+    ageBy === "posting_date"
+      ? ([
+          { label: "0-30 days old", min: 0, max: 30 },
+          { label: "31-60 days old", min: 31, max: 60 },
+          { label: "61-90 days old", min: 61, max: 90 },
+          { label: "Over 90 days old", min: 90, max: Infinity },
+        ] as const)
+      : ([
+          { label: "Not due", min: -Infinity, max: 0 },
+          { label: "1-30 days", min: 1, max: 30 },
+          { label: "31-60 days", min: 31, max: 60 },
+          { label: "61-90 days", min: 61, max: 90 },
+          { label: "Over 90 days", min: 90, max: Infinity },
+        ] as const);
 
   const buckets = bucketDefs.map((def) => ({
     bucket: def.label,
@@ -190,8 +212,9 @@ export async function getReceivablesAging(
     customerNo: string;
     name: string;
     documentNo: string;
-    dueDate: string;
-    daysOverdue: number;
+    referenceDate: string;
+    daysAged: number;
+    daysPastDue?: number;
     remaining: number;
   }> = [];
 
@@ -201,50 +224,94 @@ export async function getReceivablesAging(
     if (remaining <= 0) continue;
     if (entry.documentType !== "Invoice") continue;
 
-    const due = parseDate(entry.dueDate);
-    if (!due) continue;
-    const daysOverdue = Math.floor((now.getTime() - due.getTime()) / 86400000);
+    const postingDate = parseDate(entry.postingDate);
+    const dueDate = parseDate(entry.dueDate);
+
+    let daysAged: number | null = null;
+    let daysPastDue: number | null = null;
+    let referenceDate = "";
+
+    if (ageBy === "posting_date") {
+      if (!postingDate) continue;
+      daysAged = Math.floor(
+        (now.getTime() - postingDate.getTime()) / 86400000,
+      );
+      referenceDate = entry.postingDate ?? "";
+      if (dueDate) {
+        daysPastDue = Math.floor(
+          (now.getTime() - dueDate.getTime()) / 86400000,
+        );
+      }
+    } else {
+      if (!dueDate) continue;
+      daysAged = Math.floor((now.getTime() - dueDate.getTime()) / 86400000);
+      daysPastDue = daysAged;
+      referenceDate = entry.dueDate ?? "";
+    }
+
+    if (daysAged === null) continue;
 
     const bucketIndex = bucketDefs.findIndex(
-      (def) => daysOverdue >= def.min && daysOverdue <= def.max,
+      (def) => daysAged >= def.min && daysAged <= def.max,
     );
     if (bucketIndex >= 0) {
       buckets[bucketIndex].count += 1;
       buckets[bucketIndex].amount += remaining;
     }
 
-    if (daysOverdue > 0) {
-      const customerNo = entry.customerNo ?? entry.sellToCustomerNo ?? "";
-      const name = customerNames.get(customerNo) ?? "";
+    const customerNo = entry.customerNo ?? entry.sellToCustomerNo ?? "";
+    const name = customerNames.get(customerNo) ?? "";
+    const matchesMinDays = !minDays || daysAged >= minDays;
+
+    if (ageBy === "due_date" && daysAged > 0) {
       const agg =
         perCustomer.get(customerNo) ??
         { customerNo, name, overdue: 0, entries: 0 };
       agg.overdue += remaining;
       agg.entries += 1;
       perCustomer.set(customerNo, agg);
+    }
 
-      if (!minDaysOverdue || daysOverdue >= minDaysOverdue) {
+    if (matchesMinDays) {
+      if (ageBy === "posting_date" || daysAged > 0) {
         overdueEntries.push({
           customerNo,
           name,
           documentNo: entry.documentNo ?? "",
-          dueDate: entry.dueDate ?? "",
-          daysOverdue,
+          referenceDate,
+          daysAged,
+          ...(daysPastDue !== null ? { daysPastDue } : {}),
           remaining: round(remaining),
         });
       }
     }
   }
 
-  const totalOutstanding = buckets.reduce((sum, b) => sum + b.amount, 0);
-  const totalOverdue = buckets
-    .filter((b) => b.bucket !== "Not due")
-    .reduce((sum, b) => sum + b.amount, 0);
-  const totalNotYetDue = buckets
-    .filter((b) => b.bucket === "Not due")
-    .reduce((sum, b) => sum + b.amount, 0);
+  const totalOutstanding = round(
+    buckets.reduce((sum, b) => sum + b.amount, 0),
+  );
+  const totalOverdue =
+    ageBy === "posting_date"
+      ? round(
+          overdueEntries
+            .filter((e) => (e.daysPastDue ?? -1) > 0)
+            .reduce((sum, e) => sum + e.remaining, 0),
+        )
+      : round(
+          buckets
+            .filter((b) => b.bucket !== "Not due")
+            .reduce((sum, b) => sum + b.amount, 0),
+        );
+  const totalNotYetDue =
+    ageBy === "posting_date"
+      ? round(Math.max(0, totalOutstanding - totalOverdue))
+      : round(
+          buckets
+            .filter((b) => b.bucket === "Not due")
+            .reduce((sum, b) => sum + b.amount, 0),
+        );
 
-  overdueEntries.sort((a, b) => b.daysOverdue - a.daysOverdue);
+  overdueEntries.sort((a, b) => b.daysAged - a.daysAged);
 
   const topOverdueCustomers = [...perCustomer.values()]
     .sort((a, b) => b.overdue - a.overdue)
@@ -267,21 +334,26 @@ export async function getReceivablesAging(
     .sort((a, b) => b.balance - a.balance)
     .slice(0, 15);
 
+  const matchingTotal = round(
+    overdueEntries.reduce((sum, e) => sum + e.remaining, 0),
+  );
+  const matchingInvoiceCount = overdueEntries.length;
+
   return {
     currency: "NPR",
     asOf: now.toISOString().slice(0, 10),
+    ageBy,
     basis:
-      "Open customer ledger invoice entries, aged by due date. For who owes the most by total balance, use topCustomersByBalance (overdue vs not yet due split).",
-    totalOutstanding: round(totalOutstanding),
-    totalOverdue: round(totalOverdue),
-    totalNotYetDue: round(totalNotYetDue),
+      ageBy === "posting_date"
+        ? "Open customer ledger invoices aged by posting date (days since invoice). Includes balances not yet past payment due date."
+        : "Open customer ledger invoice entries aged by payment due date (days overdue).",
+    totalOutstanding,
+    totalOverdue,
+    totalNotYetDue,
     buckets: buckets.map((b) => ({ ...b, amount: round(b.amount) })),
-    ...(minDaysOverdue
-      ? { filterDaysOverdue: minDaysOverdue }
-      : {}),
-    matchingOverdueTotal: round(
-      overdueEntries.reduce((sum, e) => sum + e.remaining, 0),
-    ),
+    ...(minDays ? { filterMinDays: minDays } : {}),
+    matchingOverdueTotal: matchingTotal,
+    matchingInvoiceCount,
     overdueEntries: overdueEntries.slice(0, 50),
     topOverdueCustomers,
     topCustomersByBalance,
