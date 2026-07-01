@@ -10,6 +10,7 @@ import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
   fiscalYearLabel,
+  getCurrentFiscalYearStart,
   getNepaliFiscalYear,
   toBs,
 } from "./nepali-date";
@@ -126,6 +127,29 @@ async function loadSalesOrderLines(): Promise<MirrorPayload<SalesOrderLine>> {
 
 async function loadMr(): Promise<MirrorPayload<MrRecord>> {
   return (await getMirror("mr")) as MirrorPayload<MrRecord>;
+}
+
+function branchNameForCode(code: string): string {
+  const hit = listBranchDefinitions().find((b) => b.code === code);
+  return hit?.name ?? `Branch ${code}`;
+}
+
+function aggregateInvoiceSalesByBranch(
+  entries: LedgerEntry[],
+  matches?: (postingDate?: string) => boolean,
+): Map<string, { sales: number; invoices: number }> {
+  const totals = new Map<string, { sales: number; invoices: number }>();
+  for (const entry of entries) {
+    if (entry.documentType !== "Invoice") continue;
+    if (matches && !matches(entry.postingDate)) continue;
+    const code = branchCodeFromDocument(entry.documentNo);
+    if (!code) continue;
+    const agg = totals.get(code) ?? { sales: 0, invoices: 0 };
+    agg.sales += Number(entry.salesLcy ?? 0);
+    agg.invoices += 1;
+    totals.set(code, agg);
+  }
+  return totals;
 }
 
 async function buildCustomerNameMap(): Promise<Map<string, string>> {
@@ -1341,16 +1365,7 @@ export async function listBranches(): Promise<unknown> {
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
-  const totals = new Map<string, { sales: number; invoices: number }>();
-  for (const entry of ledgerPayload.value ?? []) {
-    if (entry.documentType !== "Invoice") continue;
-    const code = branchCodeFromDocument(entry.documentNo);
-    if (!code) continue;
-    const agg = totals.get(code) ?? { sales: 0, invoices: 0 };
-    agg.sales += Number(entry.salesLcy ?? 0);
-    agg.invoices += 1;
-    totals.set(code, agg);
-  }
+  const totals = aggregateInvoiceSalesByBranch(ledgerPayload.value ?? []);
 
   return {
     note:
@@ -1362,6 +1377,79 @@ export async function listBranches(): Promise<unknown> {
       allTimeInvoiceSales: round(totals.get(branch.code)?.sales ?? 0),
       allTimeInvoices: totals.get(branch.code)?.invoices ?? 0,
     })),
+    _syncedAt: ledgerPayload._syncedAt,
+  };
+}
+
+/** All branches ranked by posted invoice sales — use for "branch wise sales". */
+export async function getBranchWiseSales(
+  input?: DatePeriodInput,
+): Promise<unknown> {
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const totals = aggregateInvoiceSalesByBranch(
+    ledgerPayload.value ?? [],
+    period.matches,
+  );
+
+  const rows = [...totals.entries()]
+    .map(([code, agg]) => ({
+      branchCode: code,
+      branchName: branchNameForCode(code),
+      salesExcludingTax: round(agg.sales),
+      invoices: agg.invoices,
+    }))
+    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
+
+  const totalSales = round(rows.reduce((sum, row) => sum + row.salesExcludingTax, 0));
+
+  const currentFyStart = getCurrentFiscalYearStart();
+  let currentFiscalYear: {
+    label: string;
+    branches: typeof rows;
+    totalSales: number;
+  } | null = null;
+
+  if (currentFyStart && !input?.year && !input?.month && !input?.nepaliMonth && !input?.dateFrom) {
+    const fyTotals = aggregateInvoiceSalesByBranch(
+      ledgerPayload.value ?? [],
+      (postingDate) => {
+        const date = parseDate(postingDate);
+        if (!date) return false;
+        const fy = getNepaliFiscalYear(date);
+        return fy?.startYear === currentFyStart;
+      },
+    );
+    const fyRows = [...fyTotals.entries()]
+      .map(([code, agg]) => ({
+        branchCode: code,
+        branchName: branchNameForCode(code),
+        salesExcludingTax: round(agg.sales),
+        invoices: agg.invoices,
+      }))
+      .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
+    currentFiscalYear = {
+      label: fiscalYearLabel(currentFyStart),
+      branches: fyRows,
+      totalSales: round(fyRows.reduce((sum, row) => sum + row.salesExcludingTax, 0)),
+    };
+  }
+
+  return {
+    currency: "NPR",
+    period: period.label,
+    calendar: input?.year || input?.month ? "AD" : "all_synced_periods",
+    basis:
+      "Posted customer-ledger invoices (salesLcy). Branch = first letter of documentNo before underscore (e.g. B_SFP_...).",
+    totalSalesExcludingTax: totalSales,
+    branchCount: rows.length,
+    branches: rows,
+    currentNepaliFiscalYear: currentFiscalYear,
     _syncedAt: ledgerPayload._syncedAt,
   };
 }

@@ -55,10 +55,10 @@ const WELCOME = welcomeFor(DEFAULT_COMPANY);
 const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
 const SUGGESTIONS = [
+  "Branch wise sales",
   "List all customers",
   "What is month-wise sales this year?",
   "Show available items",
-  "Get pending items for customer ACM0000159",
 ];
 
 function createId(): string {

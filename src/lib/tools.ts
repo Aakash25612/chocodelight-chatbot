@@ -38,6 +38,7 @@ import {
   getPaymentsSummary,
   getSalesBySalesperson,
   getSalesByBranch,
+  getBranchWiseSales,
   listBranches,
   getSalesOrdersSummary,
   getSyncStatus,
@@ -210,7 +211,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_summary",
     description:
-      "Total sales summary across ALL synced data. Returns all-time net sales, byNepaliFiscalYear (primary for Nepal), currentNepaliFiscalYear (this BS fiscal year total), and byAdYear (secondary). Use for 'total sales', 'all time', or 'revenue this year' when user means the current Nepali fiscal year — combine with get_nepali_monthly_sales for month breakdown.",
+      "Total sales summary across ALL synced data (all-time, by Nepali fiscal year, by AD year). Do NOT use for branch-wise or depot-wise sales — use get_branch_wise_sales instead.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
@@ -490,6 +491,17 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description: "Optional product keyword filter.",
         },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "get_branch_wise_sales",
+    description:
+      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales (especially Saurabh Food). Returns every branch ranked by posted invoice sales (salesLcy). Invoice documents use accountability codes: B=Bhairawa, S=Birgunj, D=Nepalgunj, K=Kathmandu, W=Butwal, etc. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
         ...periodToolProperties,
       },
     },
@@ -1079,6 +1091,10 @@ export async function executeTool(
       case "list_branches":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await listBranches();
+        break;
+      case "get_branch_wise_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getBranchWiseSales(periodArgs(args));
         break;
       case "get_sales_by_branch":
         if (!useSupabaseMirror) return { error: mirrorOnly };
