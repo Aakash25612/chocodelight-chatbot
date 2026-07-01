@@ -5,6 +5,7 @@ import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
   BS_MONTHS,
   fiscalYearLabel,
+  getCurrentFiscalYearStart,
   getNepaliFiscalYear,
   toBs,
 } from "./nepali-date";
@@ -109,6 +110,9 @@ export async function getSalesSummary(): Promise<unknown> {
     }
   }
 
+  const currentFy = getNepaliFiscalYear(new Date());
+  const currentFyLabel = currentFy?.label ?? null;
+
   return {
     currency: "NPR",
     note: "Sales figures are net of tax (salesLcy) from customer ledger invoice entries. Profit is not included because COGS/cost data is not synced.",
@@ -122,6 +126,13 @@ export async function getSalesSummary(): Promise<unknown> {
         to: latest?.toISOString().slice(0, 10) ?? null,
       },
     },
+    currentNepaliFiscalYear: currentFyLabel
+      ? {
+          label: currentFyLabel,
+          sales: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
+          invoices: byFiscalYear[currentFyLabel]?.invoices ?? 0,
+        }
+      : null,
     byAdYear: Object.fromEntries(
       Object.entries(byAdYear)
         .sort(([a], [b]) => a.localeCompare(b))
@@ -498,7 +509,7 @@ export async function getCustomerStatement(input?: {
 
 /**
  * Sales aggregated by Bikram Sambat month for a Nepali fiscal year (Shrawan -> Ashadh).
- * If fiscalYearStart is omitted, uses the fiscal year of the latest posting date.
+ * If fiscalYearStart is omitted, uses the current Nepali fiscal year (today's BS calendar).
  */
 export async function getNepaliMonthlySales(
   fiscalYearStart?: number,
@@ -507,18 +518,12 @@ export async function getNepaliMonthlySales(
   if (payload.error) return { error: payload.error };
   const entries = payload.value ?? [];
 
-  let latest: Date | null = null;
-  for (const entry of entries) {
-    if (entry.documentType !== "Invoice") continue;
-    const date = parseDate(entry.postingDate);
-    if (date && (!latest || date > latest)) latest = date;
-  }
-
-  let startYear = fiscalYearStart;
-  if (!startYear) {
-    const fy = latest ? getNepaliFiscalYear(latest) : null;
-    startYear = fy?.startYear ?? toBs(new Date())?.year ?? new Date().getFullYear();
-  }
+  let latestInFy: Date | null = null;
+  const startYear =
+    fiscalYearStart ??
+    getCurrentFiscalYearStart() ??
+    toBs(new Date())?.year ??
+    new Date().getFullYear();
 
   // Fiscal order: Shrawan(3) .. Chaitra(11) of startYear, then Baisakh(0) .. Asar(2) of startYear+1.
   const fiscalOrder = [3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2];
@@ -542,18 +547,53 @@ export async function getNepaliMonthlySales(
     if (!slot) continue;
     slot.invoices += 1;
     slot.sales += Number(entry.salesLcy ?? 0);
+    if (!latestInFy || date > latestInFy) latestInFy = date;
   }
 
   const cleaned = months.map((m) => ({ ...m, sales: round(m.sales) }));
   const topMonth = [...cleaned].sort((a, b) => b.sales - a.sales)[0];
   const totalSales = round(cleaned.reduce((sum, m) => sum + m.sales, 0));
 
+  const todayBs = toBs(new Date());
+  const asOfBs = latestInFy ? toBs(latestInFy) : todayBs;
+  const isCurrentFiscalYear =
+    getCurrentFiscalYearStart() !== null &&
+    startYear === getCurrentFiscalYearStart();
+
+  let yearToDateSales = totalSales;
+  let yearToDateInvoices = cleaned.reduce((sum, m) => sum + m.invoices, 0);
+  if (isCurrentFiscalYear && asOfBs) {
+    const asOfIndex = fiscalOrder.indexOf(asOfBs.month);
+    yearToDateSales = round(
+      cleaned
+        .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
+        .reduce((sum, m) => sum + m.sales, 0),
+    );
+    yearToDateInvoices = cleaned
+      .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
+      .reduce((sum, m) => sum + m.invoices, 0);
+  }
+
   return {
     currency: "NPR",
     calendar: "Bikram Sambat",
     fiscalYear: fiscalYearLabel(startYear),
-    note: "Fiscal year runs Shrawan to Ashadh. Sales are net of tax (salesLcy).",
+    isCurrentFiscalYear,
+    asOf: {
+      ad: (latestInFy ?? new Date()).toISOString().slice(0, 10),
+      bs: asOfBs
+        ? `${asOfBs.year}/${String(asOfBs.month + 1).padStart(2, "0")}/${String(asOfBs.date).padStart(2, "0")} (${asOfBs.monthName})`
+        : null,
+    },
+    note: "Nepali fiscal year runs Shrawan to Ashadh. Sales are net of tax (salesLcy). Default calendar for month-wise sales in Nepal.",
     totalSales,
+    yearToDate: isCurrentFiscalYear
+      ? {
+          sales: yearToDateSales,
+          invoices: yearToDateInvoices,
+          throughBsMonth: asOfBs?.monthName ?? null,
+        }
+      : null,
     topMonth,
     months: cleaned,
     _syncedAt: payload._syncedAt,

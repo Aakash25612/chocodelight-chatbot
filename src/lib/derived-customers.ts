@@ -9,6 +9,7 @@ type LedgerEntry = {
   remainingAmount?: number;
   customerNo?: string;
   sellToCustomerNo?: string;
+  description?: string;
 };
 
 type MrRecord = {
@@ -42,6 +43,16 @@ function entryCustomerNo(entry: LedgerEntry): string {
   return entry.customerNo ?? entry.sellToCustomerNo ?? "";
 }
 
+/** Some Saurabh ledger rows carry a name in description, e.g. HBLCAD01800011(NAMASTE). */
+function nameFromLedgerDescription(description?: string): string | null {
+  if (!description) return null;
+  const match = String(description).match(/\(([^)]+)\)/);
+  if (!match) return null;
+  const name = match[1].trim();
+  if (name.length < 3 || /^\d+$/.test(name)) return null;
+  return name;
+}
+
 /**
  * Build a customer master substitute from synced MR + ledger when BC
  * customers API is unavailable (e.g. Saurabh permission block).
@@ -67,6 +78,13 @@ export async function buildDerivedCustomersPayload(): Promise<
     if (!existing || customerName.length > existing.length) {
       names.set(customerNo, customerName);
     }
+  }
+
+  for (const entry of ledgerPayload.value ?? []) {
+    const customerNo = entryCustomerNo(entry);
+    if (!customerNo || names.has(customerNo)) continue;
+    const inferred = nameFromLedgerDescription(entry.description);
+    if (inferred) names.set(customerNo, inferred);
   }
 
   const stats = new Map<
@@ -122,7 +140,7 @@ export async function buildDerivedCustomersPayload(): Promise<
   return {
     source: "derived_mr_ledger",
     note:
-      "Customer list built from MR customerName + open ledger balances because BC customers API is unavailable.",
+      "Customer list built from MR customerName + ledger description hints + open ledger balances because BC customers API is unavailable.",
     value,
     _syncedAt: ledgerPayload._syncedAt ?? mrPayload._syncedAt,
   };

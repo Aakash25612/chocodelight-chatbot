@@ -194,7 +194,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_monthly_revenue",
     description:
-      "Get month-wise revenue for ONE English/Gregorian (AD) calendar year (Jan-Dec) from customer ledger invoice entries. Use for AD month questions like 'which month in 2026 had most revenue'. For TOTAL sales across all time use get_sales_summary. For Nepali (Bikram Sambat) months use get_nepali_monthly_sales.",
+      "Month-wise revenue for ONE English/Gregorian (AD) calendar year (January–December ONLY). Use ONLY when the user explicitly wants AD/English months or says 'January, February…' in a Gregorian year. Do NOT use for default month-wise sales in Nepal — use get_nepali_monthly_sales instead.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -208,13 +208,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_summary",
     description:
-      "Get the TOTAL sales summary across ALL synced data (multiple years). Returns all-time net sales, invoice count, date range, plus a breakdown by AD year AND by Nepali fiscal year (Shrawan-Ashadh). Use this whenever the user asks for 'total sales', 'overall sales', 'sales so far', or sales by year / by fiscal year. Do NOT use a single-year tool for total sales.",
+      "Total sales summary across ALL synced data. Returns all-time net sales, byNepaliFiscalYear (primary for Nepal), currentNepaliFiscalYear (this BS fiscal year total), and byAdYear (secondary). Use for 'total sales', 'all time', or 'revenue this year' when user means the current Nepali fiscal year — combine with get_nepali_monthly_sales for month breakdown.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
     name: "get_nepali_monthly_sales",
     description:
-      "Get sales by Nepali (Bikram Sambat) month for a Nepali fiscal year (Shrawan through Ashadh). Use for any Nepali-month question (Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra) or Nepali fiscal-year sales. Returns each BS month's sales and the top month.",
+      "DEFAULT for month-wise sales/revenue in Nepal. Sales by Bikram Sambat month for a Nepali fiscal year (Shrawan through Ashadh). Use for 'monthwise sales', 'month-wise revenue', 'this year', YTD, or any BS month (Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra). Returns yearToDate for the current fiscal year. Omit fiscalYearStart for the current Nepali fiscal year.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

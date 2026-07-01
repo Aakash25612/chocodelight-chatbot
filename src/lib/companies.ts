@@ -56,7 +56,7 @@ const COMPANIES: Record<CompanyKey, CompanyConfig> = {
     // production OData codeunits are confirmed end-to-end.
     odataCompany:
       process.env.BC_SAURABHFOOD_ODATA_COMPANY ?? "SAURABH FOOD LIVE",
-    username: process.env.BC_SAURABHFOOD_USERNAME ?? "klnav\\chandra2",
+    username: process.env.BC_SAURABHFOOD_USERNAME ?? "klnav\\mobileapp",
     password: process.env.BC_SAURABHFOOD_PASSWORD ?? "",
     codeunits: {
       salesPost: "codeunit_SalesPost",

@@ -123,6 +123,11 @@ export function parseFiscalYearStart(input: string): number | null {
   return null;
 }
 
+/** Current BS fiscal year start (Shrawan year) for a reference date. Defaults to today. */
+export function getCurrentFiscalYearStart(reference = new Date()): number | null {
+  return getNepaliFiscalYear(reference)?.startYear ?? null;
+}
+
 /** Resolve a Nepali month name/alias from free text. Returns 0-based index or null. */
 export function parseBsMonth(input: string): number | null {
   const normalized = input.toLowerCase();

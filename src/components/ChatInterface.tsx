@@ -56,7 +56,7 @@ const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
 const SUGGESTIONS = [
   "List all customers",
-  "What is my revenue this year?",
+  "What is month-wise sales this year?",
   "Show available items",
   "Get pending items for customer ACM0000159",
 ];
