@@ -40,7 +40,7 @@ export async function getDirectResponse(
 
     const branchCode = extractBranchFromMessage(message);
     if (branchCode) {
-      return formatBranchSales(branchCode);
+      return formatBranchSales(branchCode, message);
     }
 
     if (isBranchWiseSalesQuery(normalized)) {
@@ -67,6 +67,7 @@ function extractBranchCodeQuery(message: string): string | null {
   const normalized = message.trim().toLowerCase();
   const patterns = [
     /\b(?:code|branch|depo(?:t)?)\s*[:=]?\s*([a-z])\b/i,
+    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+month/i,
     /\b(?:sales|total|revenue)\s+(?:of|for)?\s*(?:code|branch|depo(?:t)?)\s*([a-z])\b/i,
     /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+(?:sales|total|revenue)\b/i,
     /\b([a-z])\s+branch\s+(?:sales|total|revenue)?\b/i,
@@ -84,17 +85,39 @@ function isBranchWiseSalesQuery(message: string): boolean {
   return /\bbranch\s*wise\b/.test(message) || /\bbranch-wise\b/.test(message);
 }
 
-async function formatBranchSales(branchCode: string): Promise<string> {
+function wantsMonthlyBreakdown(message: string): boolean {
+  return /\b(month\s*(by|wise|-wise)|monthly|month[- ]by[- ]month|mahina)\b/i.test(
+    message,
+  );
+}
+
+async function formatBranchSales(
+  branchCode: string,
+  message: string,
+): Promise<string> {
   const branch = resolveBranch({ branchCode });
   if ("error" in branch) {
     return branch.error;
   }
 
-  const data = (await getSalesByBranch({ branchCode })) as {
+  const monthly = wantsMonthlyBreakdown(message);
+  const data = (await getSalesByBranch({
+    branchCode,
+    monthlyBreakdown: monthly,
+  })) as {
     error?: string;
     branchName?: string;
+    fiscalYear?: string;
     totalSalesExcludingTax?: number;
     invoiceCount?: number;
+    byNepaliMonth?: Array<{
+      bsMonth: string;
+      bsYear: number;
+      salesExcludingTax: number;
+      invoices: number;
+    }>;
+    allTimeSalesExcludingTax?: number;
+    allTimeInvoices?: number;
     currentNepaliFiscalYear?: {
       label: string;
       salesExcludingTax: number;
@@ -106,6 +129,32 @@ async function formatBranchSales(branchCode: string): Promise<string> {
   if (data.error) return data.error;
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
+
+  if (monthly && data.byNepaliMonth) {
+    const lines = [
+      `**${data.branchName} (code ${branchCode})** — ${companyLabel}${formatSync(data._syncedAt)}`,
+      "",
+      `### Nepali FY ${data.fiscalYear} — month-wise (Bikram Sambat)`,
+      "",
+      `| Month | BS Year | Sales (NPR) | Invoices |`,
+      `|---|---:|---:|---:|`,
+      ...data.byNepaliMonth.map(
+        (row) =>
+          `| ${row.bsMonth} | ${row.bsYear} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+      ),
+      `| **FY total** | | **${formatAmount(data.totalSalesExcludingTax)}** | **${data.invoiceCount ?? 0}** |`,
+    ];
+
+    if (data.allTimeSalesExcludingTax != null) {
+      lines.push(
+        "",
+        `All-time synced sales: **${formatAmount(data.allTimeSalesExcludingTax)}** (${data.allTimeInvoices ?? 0} invoices).`,
+      );
+    }
+
+    return lines.join("\n");
+  }
+
   const lines = [
     `**${data.branchName} (code ${branchCode})** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",

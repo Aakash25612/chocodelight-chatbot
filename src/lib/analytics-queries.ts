@@ -9,6 +9,9 @@ import {
 } from "./branches";
 import {
   loadBranchSalesCache,
+  branchMonthlyFromCache,
+  FISCAL_MONTH_ORDER,
+  type BranchMonthRow,
 } from "./branch-sales-cache";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
 import {
@@ -1508,9 +1511,56 @@ export async function getBranchWiseSales(
   };
 }
 
+function branchFiscalMonthRows(
+  entries: LedgerEntry[],
+  branchCode: string,
+  fyStartYear: number,
+): BranchMonthRow[] {
+  const monthMap = new Map<
+    number,
+    { sales: number; invoices: number; bsYear: number }
+  >();
+
+  for (const entry of entries) {
+    if (entry.documentType !== "Invoice") continue;
+    if (branchCodeFromDocument(entry.documentNo) !== branchCode) continue;
+    const date = parseDate(entry.postingDate);
+    if (!date) continue;
+    const fy = getNepaliFiscalYear(date);
+    if (!fy || fy.startYear !== fyStartYear) continue;
+    const bs = toBs(date);
+    if (!bs) continue;
+
+    const agg = monthMap.get(bs.month) ?? {
+      sales: 0,
+      invoices: 0,
+      bsYear: bs.year,
+    };
+    agg.sales += Number(entry.salesLcy ?? 0);
+    agg.invoices += 1;
+    monthMap.set(bs.month, agg);
+  }
+
+  return FISCAL_MONTH_ORDER.map((monthIndex) => {
+    const bsYear = monthIndex >= 3 ? fyStartYear : fyStartYear + 1;
+    const agg = monthMap.get(monthIndex) ?? { sales: 0, invoices: 0, bsYear };
+    return {
+      bsMonth: BS_MONTHS[monthIndex],
+      monthIndex,
+      bsYear,
+      salesExcludingTax: round(agg.sales),
+      invoices: agg.invoices,
+    };
+  });
+}
+
 /** Posted invoice sales for one branch (by name, alias, or code). */
 export async function getSalesByBranch(
-  input?: { query?: string; branchCode?: string } & DatePeriodInput,
+  input?: {
+    query?: string;
+    branchCode?: string;
+    monthlyBreakdown?: boolean;
+  } & DatePeriodInput,
 ): Promise<unknown> {
   const resolved = resolveBranch({
     query: input?.query,
@@ -1522,18 +1572,45 @@ export async function getSalesByBranch(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
+  const wantsMonthly = input?.monthlyBreakdown ?? false;
+  const currentFyStart = getCurrentFiscalYearStart();
+  const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
+
   const cached = !hasCustomPeriod(input) ? await loadBranchSalesCache() : null;
   if (cached && period.label === "all synced dates") {
     const row = cached.allTime.branches.find(
       (entry) => entry.branchCode === resolved.code,
     );
-    const currentFyStart = getCurrentFiscalYearStart();
-    const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
     const fyRow = fyLabel
       ? cached.byNepaliFiscalYear[fyLabel]?.branches.find(
           (entry) => entry.branchCode === resolved.code,
         )
       : null;
+
+    if (wantsMonthly && fyLabel) {
+      const months = branchMonthlyFromCache(cached, resolved.code, fyLabel);
+      const fySales = round(
+        months.reduce((sum, m) => sum + m.salesExcludingTax, 0),
+      );
+      const fyInvoices = months.reduce((sum, m) => sum + m.invoices, 0);
+
+      return {
+        currency: "NPR",
+        branchCode: resolved.code,
+        branchName: resolved.name,
+        calendar: "Bikram Sambat",
+        fiscalYear: fyLabel,
+        period: `Nepali FY ${fyLabel}`,
+        basis:
+          "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code. Months in fiscal order (Shrawan → Ashadh).",
+        totalSalesExcludingTax: fySales,
+        invoiceCount: fyInvoices,
+        byNepaliMonth: months,
+        allTimeSalesExcludingTax: row?.salesExcludingTax ?? 0,
+        allTimeInvoices: row?.invoices ?? 0,
+        _syncedAt: cached._builtAt,
+      };
+    }
 
     return {
       currency: "NPR",
@@ -1557,6 +1634,33 @@ export async function getSalesByBranch(
 
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  if (wantsMonthly && currentFyStart && !hasCustomPeriod(input)) {
+    const months = branchFiscalMonthRows(
+      ledgerPayload.value ?? [],
+      resolved.code,
+      currentFyStart,
+    );
+    const fySales = round(
+      months.reduce((sum, m) => sum + m.salesExcludingTax, 0),
+    );
+    const fyInvoices = months.reduce((sum, m) => sum + m.invoices, 0);
+
+    return {
+      currency: "NPR",
+      branchCode: resolved.code,
+      branchName: resolved.name,
+      calendar: "Bikram Sambat",
+      fiscalYear: fyLabel,
+      period: fyLabel ? `Nepali FY ${fyLabel}` : period.label,
+      basis:
+        "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code. Months in fiscal order (Shrawan → Ashadh).",
+      totalSalesExcludingTax: fySales,
+      invoiceCount: fyInvoices,
+      byNepaliMonth: months,
+      _syncedAt: ledgerPayload._syncedAt,
+    };
+  }
 
   let totalSales = 0;
   let invoiceCount = 0;

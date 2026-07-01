@@ -515,7 +515,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_by_branch",
     description:
-      "Posted invoice sales for one branch/depot by name or code. Saurabh Food: Bhairawa=B, Birgunj=S, Nepalgunj=D, Kathmandu=K, Butwal=W, etc. Uses ledger invoices (salesLcy), not sales orders. Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
+      "Posted invoice sales for one branch/depot by name or code. Saurabh Food: Bhairawa=B, Birgunj=S, Nepalgunj=D, Kathmandu=K, Butwal=W, etc. Uses ledger invoices (salesLcy), not sales orders. Set monthlyBreakdown=true for month-by-month sales in current Nepali fiscal year (Shrawan → Ashadh). Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -526,6 +526,11 @@ export const toolDeclarations: FunctionDeclaration[] = [
         branchCode: {
           type: SchemaType.STRING,
           description: "Single-letter accountability code, e.g. B for Bhairawa.",
+        },
+        monthlyBreakdown: {
+          type: SchemaType.BOOLEAN,
+          description:
+            "When true, return month-by-month sales for the current Nepali fiscal year in BS calendar order.",
         },
         ...periodToolProperties,
       },
@@ -1101,6 +1106,7 @@ export async function executeTool(
         result = await getSalesByBranch({
           query: args.query as string | undefined,
           branchCode: args.branchCode as string | undefined,
+          monthlyBreakdown: args.monthlyBreakdown === true,
           ...periodArgs(args),
         });
         break;
