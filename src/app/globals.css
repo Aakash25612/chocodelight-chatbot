@@ -3,6 +3,7 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+  --app-height: 100dvh;
 }
 
 @theme inline {
@@ -12,9 +13,25 @@
   --font-mono: var(--font-geist-mono);
 }
 
+html {
+  height: 100%;
+  height: var(--app-height);
+  overflow: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
+  height: 100%;
+  height: var(--app-height);
+  overflow: hidden;
+  overscroll-behavior: none;
   background: var(--background);
   color: var(--foreground);
-  padding: env(safe-area-inset-top) env(safe-area-inset-right)
-    env(safe-area-inset-bottom) env(safe-area-inset-left);
+  -webkit-tap-highlight-color: transparent;
+}
+
+@supports (-webkit-touch-callout: none) {
+  :root {
+    --app-height: -webkit-fill-available;
+  }
 }

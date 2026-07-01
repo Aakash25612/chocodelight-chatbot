@@ -375,7 +375,7 @@ export default function ChatInterface() {
   }
 
   return (
-    <div className="flex h-full w-full overflow-hidden bg-zinc-50 text-zinc-950">
+    <div className="flex h-full min-h-0 w-full overflow-hidden bg-zinc-50 text-zinc-950">
       {sidebarOpen && (
         <button
           type="button"
@@ -447,32 +447,35 @@ export default function ChatInterface() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="sticky top-0 z-10 border-b border-zinc-200 bg-white/80 px-3 py-3 backdrop-blur-xl sm:px-6">
-          <div className="mx-auto flex max-w-4xl items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <header className="z-10 shrink-0 border-b border-zinc-200 bg-white/90 px-3 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-xl sm:px-6">
+          <div className="mx-auto flex max-w-4xl items-center justify-between gap-2 sm:gap-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
               <button
                 type="button"
                 onClick={() => setSidebarOpen(true)}
-                className="rounded-full p-2 text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950 md:hidden"
+                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-zinc-500 transition hover:bg-zinc-100 hover:text-zinc-950 md:hidden"
                 aria-label="Open conversations"
               >
-                <span className="block h-0.5 w-4 bg-current" />
-                <span className="mt-1 block h-0.5 w-4 bg-current" />
+                <span className="flex flex-col gap-1">
+                  <span className="block h-0.5 w-4 bg-current" />
+                  <span className="block h-0.5 w-4 bg-current" />
+                  <span className="block h-0.5 w-4 bg-current" />
+                </span>
               </button>
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-zinc-950 text-xs font-semibold text-white shadow-sm sm:h-10 sm:w-10 sm:text-sm">
                 {getCompanyMeta(company).short}
               </div>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <h1 className="truncate text-sm font-semibold tracking-tight text-zinc-950 sm:text-lg">
                   {getCompanyMeta(company).label} BC Assistant
                 </h1>
-                <p className="truncate text-xs text-zinc-500 sm:text-sm">
+                <p className="hidden truncate text-xs text-zinc-500 sm:block sm:text-sm">
                   Gemini, Business Central, Supabase
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
               <label className="sr-only" htmlFor="company-select">
                 Company
               </label>
@@ -480,7 +483,7 @@ export default function ChatInterface() {
                 id="company-select"
                 value={company}
                 onChange={(e) => switchCompany(e.target.value as CompanyKey)}
-                className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 sm:text-sm"
+                className="max-w-[7.5rem] truncate rounded-full border border-zinc-200 bg-white px-2.5 py-2 text-xs font-medium text-zinc-700 shadow-sm transition hover:border-zinc-300 focus:outline-none focus:ring-2 focus:ring-zinc-400 sm:max-w-none sm:px-3 sm:py-1.5 sm:text-sm"
                 aria-label="Select company"
               >
                 {COMPANIES.map((c) => (
@@ -512,19 +515,20 @@ export default function ChatInterface() {
 
         <div
           ref={scrollRef}
-          className="flex-1 overflow-y-auto overflow-x-hidden px-3 py-5 sm:px-4 sm:py-8"
+          className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-y-contain px-3 py-4 sm:px-4 sm:py-8"
+          style={{ WebkitOverflowScrolling: "touch" }}
         >
-          <div className="mx-auto max-w-4xl space-y-4">
+          <div className="mx-auto max-w-4xl space-y-3 sm:space-y-4">
             {messages.map((msg, i) => (
               <div
                 key={`${msg.role}-${i}`}
                 className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`max-w-[92%] overflow-hidden rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm sm:max-w-[85%] ${
+                  className={`overflow-hidden rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed shadow-sm sm:px-4 sm:py-3 ${
                     msg.role === "user"
-                      ? "bg-zinc-950 text-white"
-                      : "border border-zinc-200 bg-white text-zinc-800"
+                      ? "max-w-[min(100%,20rem)] bg-zinc-950 text-white sm:max-w-[85%]"
+                      : "w-full max-w-full border border-zinc-200 bg-white text-zinc-800 sm:max-w-[85%]"
                   }`}
                 >
                   <MessageContent content={msg.content} />
@@ -547,8 +551,8 @@ export default function ChatInterface() {
         </div>
 
         {messages.length === 1 && messages[0].content === WELCOME && (
-          <div className="px-3 pb-2 sm:px-4">
-            <div className="mx-auto flex max-w-4xl gap-2 overflow-x-auto pb-1">
+          <div className="shrink-0 px-3 pb-2 sm:px-4">
+            <div className="mx-auto flex max-w-4xl flex-wrap gap-2 pb-1 sm:flex-nowrap sm:overflow-x-auto">
               {SUGGESTIONS.map((suggestion) => (
                 <button
                   key={suggestion}
@@ -563,7 +567,7 @@ export default function ChatInterface() {
           </div>
         )}
 
-        <div className="shrink-0 border-t border-zinc-200 bg-white/90 px-2 py-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] backdrop-blur-xl sm:px-4 sm:py-4 sm:pb-4">
+        <div className="shrink-0 border-t border-zinc-200 bg-white/95 px-2 py-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] backdrop-blur-xl sm:px-4 sm:py-4 sm:pb-4">
           {reportMode && (
             <div className="mx-auto mb-2 flex max-w-4xl items-center justify-between rounded-2xl border border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-800">
               <span>
@@ -702,12 +706,15 @@ function MarkdownTable({ lines }: { lines: string[] }) {
   const rows = rowLines.map(parseTableRow).filter((row) => row.length > 0);
 
   return (
-    <div className="-mx-1 overflow-x-auto rounded-xl border border-zinc-200 bg-white">
-      <table className="min-w-full text-left text-xs">
+    <div className="-mx-1 max-w-[calc(100vw-2rem)] overflow-x-auto rounded-xl border border-zinc-200 bg-white sm:max-w-none">
+      <table className="w-full min-w-[16rem] text-left text-[11px] sm:text-xs">
         <thead className="bg-zinc-50 text-zinc-500">
           <tr>
             {headers.map((header, index) => (
-              <th key={index} className="whitespace-nowrap px-3 py-2 font-medium">
+              <th
+                key={index}
+                className="px-2 py-1.5 font-medium sm:whitespace-nowrap sm:px-3 sm:py-2"
+              >
                 <InlineMarkdown text={header} />
               </th>
             ))}
@@ -717,7 +724,10 @@ function MarkdownTable({ lines }: { lines: string[] }) {
           {rows.map((row, rowIndex) => (
             <tr key={rowIndex}>
               {row.map((cell, cellIndex) => (
-                <td key={cellIndex} className="whitespace-nowrap px-3 py-2">
+                <td
+                  key={cellIndex}
+                  className="px-2 py-1.5 sm:whitespace-nowrap sm:px-3 sm:py-2"
+                >
                   <InlineMarkdown text={cell} />
                 </td>
               ))}

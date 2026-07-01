@@ -30,7 +30,7 @@ export default function PwaInstallHint() {
   if (!visible) return null;
 
   return (
-    <div className="border-b border-amber-200 bg-amber-50 px-3 py-2.5 text-center text-xs text-amber-950 sm:px-6 sm:text-sm">
+    <div className="shrink-0 border-b border-amber-200 bg-amber-50 px-3 py-2 text-center text-[11px] text-amber-950 sm:px-6 sm:py-2.5 sm:text-sm">
       <span>
         Install on iPhone: tap{" "}
         <span className="font-semibold">Share</span> →{" "}

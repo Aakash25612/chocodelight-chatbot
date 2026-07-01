@@ -36,6 +36,7 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  interactiveWidget: "resizes-content",
 };
 
 export default function RootLayout({
@@ -46,9 +47,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full h-dvh overflow-hidden antialiased`}
     >
-      <body className="min-h-full flex flex-col">
+      <body className="flex h-dvh min-h-dvh flex-col overflow-hidden antialiased">
         <PwaInstallHint />
         {children}
       </body>
