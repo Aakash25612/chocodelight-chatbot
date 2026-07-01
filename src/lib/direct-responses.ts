@@ -2,8 +2,8 @@ import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
 import { getSalesByBranch, getBranchWiseSales } from "./analytics-queries";
 import { resolveBranch } from "./branches";
-import { runWithCompany } from "./company-context";
-import { normalizeCompanyKey } from "./companies";
+import { getCompany, normalizeCompanyKey } from "./companies";
+import { runWithCompany, getActiveCompany } from "./company-context";
 
 type Customer = {
   number?: string;
@@ -38,7 +38,7 @@ export async function getDirectResponse(
       return listAllCustomers();
     }
 
-    const branchCode = extractBranchCodeQuery(message);
+    const branchCode = extractBranchFromMessage(message);
     if (branchCode) {
       return formatBranchSales(branchCode);
     }
@@ -51,12 +51,27 @@ export async function getDirectResponse(
   });
 }
 
+function extractBranchFromMessage(message: string): string | null {
+  const code = extractBranchCodeQuery(message);
+  if (code) return code;
+
+  if (/\b(sales|total|revenue|branch|code|depo|depot)\b/i.test(message)) {
+    const resolved = resolveBranch({ query: message });
+    if (!("error" in resolved)) return resolved.code;
+  }
+
+  return null;
+}
+
 function extractBranchCodeQuery(message: string): string | null {
   const normalized = message.trim().toLowerCase();
   const patterns = [
-    /\b(?:code|branch)\s+([a-z])\b/i,
-    /\b(?:sales|total)\s+(?:of\s+)?(?:code|branch)\s+([a-z])\b/i,
-    /\b([a-z])\s+branch\s+(?:sales|total)\b/i,
+    /\b(?:code|branch|depo(?:t)?)\s*[:=]?\s*([a-z])\b/i,
+    /\b(?:sales|total|revenue)\s+(?:of|for)?\s*(?:code|branch|depo(?:t)?)\s*([a-z])\b/i,
+    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+(?:sales|total|revenue)\b/i,
+    /\b([a-z])\s+branch\s+(?:sales|total|revenue)?\b/i,
+    /\bbranch\s+([a-z])\b/i,
+    /\bfor\s+code\s+([a-z])\b/i,
   ];
   for (const pattern of patterns) {
     const match = normalized.match(pattern);
@@ -90,8 +105,9 @@ async function formatBranchSales(branchCode: string): Promise<string> {
 
   if (data.error) return data.error;
 
+  const companyLabel = getCompany(getActiveCompany()).displayName;
   const lines = [
-    `**${data.branchName} (code ${branchCode})** — posted invoice sales${formatSync(data._syncedAt)}`,
+    `**${data.branchName} (code ${branchCode})** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `| Period | Sales (NPR) | Invoices |`,
     `|---|---:|---:|`,
@@ -132,8 +148,9 @@ async function formatBranchWiseSales(): Promise<string> {
 
   if (data.error) return data.error;
 
+  const companyLabel = getCompany(getActiveCompany()).displayName;
   const lines = [
-    `**Branch-wise sales** (Saurabh Food)${formatSync(data._syncedAt)}`,
+    `**Branch-wise sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     "### All synced invoice sales",
     "",

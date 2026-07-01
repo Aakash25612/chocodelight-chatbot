@@ -143,6 +143,9 @@ export function resolveBranch(input?: {
     const code = input.branchCode.trim().toUpperCase();
     const hit = branches.find((b) => b.code === code);
     if (hit) return hit;
+    if (/^[A-Z]$/.test(code)) {
+      return { code, name: branchNameForCode(code), aliases: [] };
+    }
     return {
       error: `Branch code "${code}" is not in the registry for this company.`,
       branches,

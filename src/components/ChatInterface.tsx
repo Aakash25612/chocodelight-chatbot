@@ -56,6 +56,7 @@ const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
 const SUGGESTIONS = [
   "Branch wise sales",
+  "Code W sales",
   "List all customers",
   "What is month-wise sales this year?",
   "Show available items",
