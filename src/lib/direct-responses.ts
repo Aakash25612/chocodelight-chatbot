@@ -28,6 +28,13 @@ type MirrorPayload<T> = {
   error?: string;
 };
 
+function salesIncl(row: {
+  salesIncludingTax?: number;
+  salesExcludingTax?: number;
+}): number {
+  return row.salesIncludingTax ?? row.salesExcludingTax ?? 0;
+}
+
 export async function getDirectResponse(
   message: string,
   company?: string,
@@ -267,18 +274,22 @@ async function formatBranchSales(
     error?: string;
     branchName?: string;
     fiscalYear?: string;
+    totalSalesIncludingTax?: number;
     totalSalesExcludingTax?: number;
     invoiceCount?: number;
     byNepaliMonth?: Array<{
       bsMonth: string;
       bsYear: number;
+      salesIncludingTax?: number;
       salesExcludingTax: number;
       invoices: number;
     }>;
+    allTimeSalesIncludingTax?: number;
     allTimeSalesExcludingTax?: number;
     allTimeInvoices?: number;
     currentNepaliFiscalYear?: {
       label: string;
+      salesIncludingTax?: number;
       salesExcludingTax: number;
       invoices: number;
     };
@@ -295,19 +306,19 @@ async function formatBranchSales(
       "",
       `### Nepali FY ${data.fiscalYear} — month-wise (Bikram Sambat)`,
       "",
-      `| Month | BS Year | Sales (NPR) | Invoices |`,
+      `| Month | BS Year | Sales Incl. VAT (NPR) | Invoices |`,
       `|---|---:|---:|---:|`,
       ...data.byNepaliMonth.map(
         (row) =>
-          `| ${row.bsMonth} | ${row.bsYear} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+          `| ${row.bsMonth} | ${row.bsYear} | ${formatAmount(salesIncl(row))} | ${row.invoices} |`,
       ),
-      `| **FY total** | | **${formatAmount(data.totalSalesExcludingTax)}** | **${data.invoiceCount ?? 0}** |`,
+      `| **FY total** | | **${formatAmount(salesIncl({ salesIncludingTax: data.totalSalesIncludingTax, salesExcludingTax: data.totalSalesExcludingTax }))}** | **${data.invoiceCount ?? 0}** |`,
     ];
 
-    if (data.allTimeSalesExcludingTax != null) {
+    if (data.allTimeSalesIncludingTax != null || data.allTimeSalesExcludingTax != null) {
       lines.push(
         "",
-        `All-time synced sales: **${formatAmount(data.allTimeSalesExcludingTax)}** (${data.allTimeInvoices ?? 0} invoices).`,
+        `All-time synced sales (Incl. VAT): **${formatAmount(salesIncl({ salesIncludingTax: data.allTimeSalesIncludingTax, salesExcludingTax: data.allTimeSalesExcludingTax }))}** (${data.allTimeInvoices ?? 0} invoices).`,
       );
     }
 
@@ -317,14 +328,14 @@ async function formatBranchSales(
   const lines = [
     `**${data.branchName} (code ${branchCode})** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
-    `| Period | Sales (NPR) | Invoices |`,
+    `| Period | Sales Incl. VAT (NPR) | Invoices |`,
     `|---|---:|---:|`,
-    `| All synced data | ${formatAmount(data.totalSalesExcludingTax)} | ${data.invoiceCount ?? 0} |`,
+    `| All synced data | ${formatAmount(salesIncl({ salesIncludingTax: data.totalSalesIncludingTax, salesExcludingTax: data.totalSalesExcludingTax }))} | ${data.invoiceCount ?? 0} |`,
   ];
 
   if (data.currentNepaliFiscalYear) {
     lines.push(
-      `| Nepali FY ${data.currentNepaliFiscalYear.label} | ${formatAmount(data.currentNepaliFiscalYear.salesExcludingTax)} | ${data.currentNepaliFiscalYear.invoices} |`,
+      `| Nepali FY ${data.currentNepaliFiscalYear.label} | ${formatAmount(salesIncl(data.currentNepaliFiscalYear))} | ${data.currentNepaliFiscalYear.invoices} |`,
     );
   }
 
@@ -337,16 +348,20 @@ async function formatBranchWiseSales(): Promise<string> {
     branches?: Array<{
       branchCode: string;
       branchName: string;
+      salesIncludingTax?: number;
       salesExcludingTax: number;
       invoices: number;
     }>;
+    totalSalesIncludingTax?: number;
     totalSalesExcludingTax?: number;
     currentNepaliFiscalYear?: {
       label: string;
-      totalSales: number;
+      totalSalesIncludingTax?: number;
+      totalSales?: number;
       branches: Array<{
         branchCode: string;
         branchName: string;
+        salesIncludingTax?: number;
         salesExcludingTax: number;
         invoices: number;
       }>;
@@ -362,13 +377,13 @@ async function formatBranchWiseSales(): Promise<string> {
     "",
     "### All synced invoice sales",
     "",
-    "| Code | Branch | Sales (NPR) | Invoices |",
+    "| Code | Branch | Sales Incl. VAT (NPR) | Invoices |",
     "|---|---|---:|---:|",
     ...(data.branches ?? []).map(
       (row) =>
-        `| ${row.branchCode} | ${row.branchName} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+        `| ${row.branchCode} | ${row.branchName} | ${formatAmount(salesIncl(row))} | ${row.invoices} |`,
     ),
-    `| **Total** | | **${formatAmount(data.totalSalesExcludingTax)}** | |`,
+    `| **Total** | | **${formatAmount(salesIncl({ salesIncludingTax: data.totalSalesIncludingTax, salesExcludingTax: data.totalSalesExcludingTax }))}** | |`,
   ];
 
   if (data.currentNepaliFiscalYear) {
@@ -376,13 +391,13 @@ async function formatBranchWiseSales(): Promise<string> {
       "",
       `### Current Nepali FY ${data.currentNepaliFiscalYear.label}`,
       "",
-      "| Code | Branch | Sales (NPR) | Invoices |",
+      "| Code | Branch | Sales Incl. VAT (NPR) | Invoices |",
       "|---|---|---:|---:|",
       ...data.currentNepaliFiscalYear.branches.map(
         (row) =>
-          `| ${row.branchCode} | ${row.branchName} | ${formatAmount(row.salesExcludingTax)} | ${row.invoices} |`,
+          `| ${row.branchCode} | ${row.branchName} | ${formatAmount(salesIncl(row))} | ${row.invoices} |`,
       ),
-      `| **Total** | | **${formatAmount(data.currentNepaliFiscalYear.totalSales)}** | |`,
+      `| **Total** | | **${formatAmount(salesIncl({ salesIncludingTax: data.currentNepaliFiscalYear.totalSalesIncludingTax, salesExcludingTax: data.currentNepaliFiscalYear.totalSales }))}** | |`,
     );
   }
 

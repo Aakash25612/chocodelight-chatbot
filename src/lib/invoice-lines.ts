@@ -105,7 +105,10 @@ export type PostedSalesDocument = {
   documentNo: string;
   postingDate: string;
   branchCode: string;
+  /** BC line.amount total (excl VAT / ledger salesLcy basis). */
   salesAmount: number;
+  /** BC amountIncludingVAT total (incl VAT — preferred for display). */
+  salesAmountIncludingTax: number;
   documentKind: "invoice" | "credit_memo";
 };
 
@@ -123,6 +126,15 @@ function documentKey(header: {
 
 function sumLineAmounts(lines: Array<{ amount?: number }>): number {
   return lines.reduce((sum, line) => sum + Number(line.amount ?? 0), 0);
+}
+
+function sumLineAmountsIncl(
+  lines: Array<{ amountIncludingVAT?: number; amount?: number }>,
+): number {
+  return lines.reduce(
+    (sum, line) => sum + Number(line.amountIncludingVAT ?? line.amount ?? 0),
+    0,
+  );
 }
 
 export function flattenPostedSalesDocuments(
@@ -148,6 +160,9 @@ export function flattenPostedSalesDocuments(
       postingDate: String(header.postingDate ?? ""),
       branchCode,
       salesAmount: sumLineAmounts(header.salesInvoiceLines ?? []),
+      salesAmountIncludingTax: sumLineAmountsIncl(
+        header.salesInvoiceLines ?? [],
+      ),
       documentKind: "invoice",
     });
   }
@@ -168,6 +183,7 @@ export function flattenPostedSalesDocuments(
       postingDate: String(header.postingDate ?? ""),
       branchCode,
       salesAmount: sumLineAmounts(header.salesCrMemoLines ?? []),
+      salesAmountIncludingTax: sumLineAmountsIncl(header.salesCrMemoLines ?? []),
       documentKind: "credit_memo",
     });
   }

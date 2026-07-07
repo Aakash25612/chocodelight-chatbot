@@ -211,7 +211,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_summary",
     description:
-      "Total sales summary across ALL synced data (all-time, by Nepali fiscal year, by AD year). Uses posted sales invoice/credit memo documents when synced (matches ledger); falls back to customer ledger. Do NOT use for branch-wise or depot-wise sales — use get_branch_wise_sales instead.",
+      "Total sales summary across ALL synced data (all-time, by Nepali fiscal year, by AD year). Present netSalesIncludingTax and salesIncludingTax fields as primary amounts (Incl. VAT). Do NOT use for branch-wise or depot-wise sales — use get_branch_wise_sales instead.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
@@ -281,7 +281,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales totals from posted invoice lines (excl. and incl. VAT) or sales order lines. Use for product sales amount AND average selling price questions.",
+      "Get invoiced product sales totals from posted invoice lines (incl. and excl. VAT) or sales order lines. Returns totalSalesIncludingTax and per-item salesIncludingTax — present these as the primary amounts (Incl. VAT). Use for product sales amount AND average selling price questions.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -444,7 +444,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_category_sales",
     description:
-      "Product category sales from synced sales order lines. Supports year/month/week/date range/Nepali month filters.",
+      "Product category sales from posted invoice lines (Incl. VAT primary) or sales order lines. Present totalSalesIncludingTax and salesIncludingTax. Supports year/month/week/date range/Nepali month filters.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: { ...periodToolProperties },
@@ -485,7 +485,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_customer_product_sales",
     description:
-      "What products ONE customer bought in a specific period. USE THIS for 'what did Bhatbhateni buy in June' — pass query + year + month (June=6), or dateFrom/dateTo, or week. Returns item lines for ONLY that window, not year-to-date.",
+      "What products ONE customer bought in a specific period. Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT). USE THIS for 'what did Bhatbhateni buy in June' — pass query + year + month (June=6), or dateFrom/dateTo, or week. Returns item lines for ONLY that window, not year-to-date.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -503,7 +503,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_branch_wise_sales",
     description:
-      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales (especially Saurabh Food). Returns every branch ranked by posted invoice sales. Saurabh codes: J=Bhairahawa, I=Butwal, S=Birgunj Factory, B=Biratnagar Office, K=Pokhara, D=Nepalgunj, etc. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
+      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales. Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Saurabh codes: J=Bhairahawa, I=Butwal, S=Birgunj Factory, B=Biratnagar Office, K=Pokhara, D=Nepalgunj, etc. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -520,7 +520,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_by_branch",
     description:
-      "Posted invoice sales for one branch/depot by name or code. Saurabh: Bhairahawa=J, Butwal=I, Birgunj Factory=S, Biratnagar Office=B, Pokhara=K, Nepalgunj=D. Uses posted invoice documents when synced (else ledger). Set monthlyBreakdown=true for month-by-month sales in current Nepali fiscal year (Shrawan → Ashadh). Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
+      "Posted invoice sales for one branch/depot by name or code. Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT). Saurabh: Bhairahawa=J, Butwal=I, Birgunj Factory=S, Birgunj Office=B, Pokhara=K, Nepalgunj=D. Set monthlyBreakdown=true for month-by-month sales in current Nepali fiscal year (Shrawan → Ashadh). Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

@@ -1,5 +1,10 @@
 import { getMirror, getSyncStatus } from "./bc-mirror";
-import { searchCustomers } from "./analytics";
+import {
+  searchCustomers,
+  loadPostedInvoiceLinePayloads,
+  postedLineSalesExcl,
+  postedLineSalesIncl,
+} from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
 import {
   branchCodeFromDocument,
@@ -948,7 +953,7 @@ export async function getLowStockItems(input?: {
   };
 }
 
-/** Product category sales from synced sales order lines. */
+/** Product category sales from posted invoice lines or sales order lines. */
 export async function getCategorySales(
   input?: DatePeriodInput,
 ): Promise<unknown> {
@@ -956,20 +961,8 @@ export async function getCategorySales(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
-  const [linesPayload, ordersPayload, itemsPayload] = await Promise.all([
-    loadSalesOrderLines(),
-    loadSalesOrders(),
-    loadItems(),
-  ]);
-  if (linesPayload.error) return { error: linesPayload.error };
-  if (ordersPayload.error) return { error: ordersPayload.error };
-
-  const orderDates = new Map<string, string>();
-  for (const order of ordersPayload.value ?? []) {
-    if (order.number && order.postingDate) {
-      orderDates.set(order.number, order.postingDate);
-    }
-  }
+  const posted = await loadPostedInvoiceLinePayloads();
+  const itemsPayload = await loadItems();
 
   const itemMeta = new Map<string, Item>();
   for (const item of itemsPayload.value ?? []) {
@@ -978,44 +971,123 @@ export async function getCategorySales(
 
   const byCategory = new Map<
     string,
-    { category: string; sales: number; quantity: number; lineCount: number }
+    {
+      category: string;
+      salesIncl: number;
+      salesExcl: number;
+      quantity: number;
+      lineCount: number;
+    }
   >();
-  let totalSales = 0;
+  let totalIncl = 0;
+  let totalExcl = 0;
 
-  for (const line of linesPayload.value ?? []) {
-    const qty = Number(line.quantityInvoiced ?? 0);
-    if (qty <= 0) continue;
-    const postingDate = orderDates.get(String(line.docNo ?? ""));
-    if (!postingDate || !period.matches(postingDate)) continue;
-    const itemNo = String(line.itemNo ?? "");
-    const category = itemMeta.get(itemNo)?.itemCategory ?? "(unknown)";
-    const sales = qty * Number(line.unitPrice ?? 0);
-    totalSales += sales;
-    const agg =
-      byCategory.get(category) ??
-      { category, sales: 0, quantity: 0, lineCount: 0 };
-    agg.sales += sales;
-    agg.quantity += qty;
-    agg.lineCount += 1;
-    byCategory.set(category, agg);
+  if (posted.usePostedInvoices) {
+    for (const line of posted.invoiceLines) {
+      const qty = Number(line.quantity ?? 0);
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || qty <= 0) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!postingDate || !period.matches(postingDate)) continue;
+      const category =
+        String(line.itemCategoryCode ?? "") ||
+        itemMeta.get(itemNo)?.itemCategory ||
+        "(unknown)";
+      const salesIncl = postedLineSalesIncl(line);
+      const salesExcl = postedLineSalesExcl(line);
+      totalIncl += salesIncl;
+      totalExcl += salesExcl;
+      const agg =
+        byCategory.get(category) ??
+        { category, salesIncl: 0, salesExcl: 0, quantity: 0, lineCount: 0 };
+      agg.salesIncl += salesIncl;
+      agg.salesExcl += salesExcl;
+      agg.quantity += qty;
+      agg.lineCount += 1;
+      byCategory.set(category, agg);
+    }
+
+    for (const line of posted.crMemoLines) {
+      const qty = Number(line.quantity ?? 0);
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || qty <= 0) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!postingDate || !period.matches(postingDate)) continue;
+      const category =
+        String(line.itemCategoryCode ?? "") ||
+        itemMeta.get(itemNo)?.itemCategory ||
+        "(unknown)";
+      const salesIncl = -Math.abs(postedLineSalesIncl(line));
+      const salesExcl = -Math.abs(postedLineSalesExcl(line));
+      totalIncl += salesIncl;
+      totalExcl += salesExcl;
+      const agg =
+        byCategory.get(category) ??
+        { category, salesIncl: 0, salesExcl: 0, quantity: 0, lineCount: 0 };
+      agg.salesIncl += salesIncl;
+      agg.salesExcl += salesExcl;
+      agg.quantity -= qty;
+      agg.lineCount += 1;
+      byCategory.set(category, agg);
+    }
+  } else {
+    const [linesPayload, ordersPayload] = await Promise.all([
+      loadSalesOrderLines(),
+      loadSalesOrders(),
+    ]);
+    if (linesPayload.error) return { error: linesPayload.error };
+    if (ordersPayload.error) return { error: ordersPayload.error };
+
+    const orderDates = new Map<string, string>();
+    for (const order of ordersPayload.value ?? []) {
+      if (order.number && order.postingDate) {
+        orderDates.set(order.number, order.postingDate);
+      }
+    }
+
+    for (const line of linesPayload.value ?? []) {
+      const qty = Number(line.quantityInvoiced ?? 0);
+      if (qty <= 0) continue;
+      const postingDate = orderDates.get(String(line.docNo ?? ""));
+      if (!postingDate || !period.matches(postingDate)) continue;
+      const itemNo = String(line.itemNo ?? "");
+      const category = itemMeta.get(itemNo)?.itemCategory ?? "(unknown)";
+      const sales = qty * Number(line.unitPrice ?? 0);
+      totalIncl += sales;
+      totalExcl += sales;
+      const agg =
+        byCategory.get(category) ??
+        { category, salesIncl: 0, salesExcl: 0, quantity: 0, lineCount: 0 };
+      agg.salesIncl += sales;
+      agg.salesExcl += sales;
+      agg.quantity += qty;
+      agg.lineCount += 1;
+      byCategory.set(category, agg);
+    }
   }
 
   const categories = [...byCategory.values()]
     .map((row) => ({
-      ...row,
-      salesExcludingTax: round(row.sales),
+      category: row.category,
+      salesIncludingTax: round(row.salesIncl),
+      salesExcludingTax: round(row.salesExcl),
       quantityInvoiced: round(row.quantity),
+      lineCount: row.lineCount,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
 
   return {
     currency: "NPR",
     period: period.label,
-    basis:
-      "Sales order lines (quantityInvoiced × unitPrice). Partial history from ~Jul 2024.",
-    totalSalesExcludingTax: round(totalSales),
+    displayNote:
+      "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
+    basis: posted.usePostedInvoices
+      ? "Posted sales invoice lines (amountIncludingVAT) minus credit memo lines."
+      : "Sales order lines (quantityInvoiced × unitPrice). Partial history from ~Jul 2024.",
+    totalSalesIncludingTax: round(totalIncl),
+    totalSalesExcludingTax: round(totalExcl),
     categories,
-    _syncedAt: linesPayload._syncedAt,
+    _syncedAt: posted.syncedAt ?? itemsPayload._syncedAt,
   };
 }
 
@@ -1164,7 +1236,7 @@ export async function searchSalesOrders(
   };
 }
 
-/** Product sales for one customer from sales order lines. */
+/** Product sales for one customer from posted invoice lines or sales order lines. */
 export async function getCustomerProductSales(
   input?: {
     customerNo?: string;
@@ -1181,22 +1253,12 @@ export async function getCustomerProductSales(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
-  const [ordersPayload, linesPayload, itemsPayload] = await Promise.all([
-    loadSalesOrders(),
-    loadSalesOrderLines(),
-    loadItems(),
-  ]);
-  if (ordersPayload.error) return { error: ordersPayload.error };
-  if (linesPayload.error) return { error: linesPayload.error };
-
-  const customerOrders = new Map<string, string>();
-  for (const order of ordersPayload.value ?? []) {
-    if (order.customerNumber !== resolved.customerNo || !order.number) continue;
-    if (!order.postingDate || !period.matches(order.postingDate)) continue;
-    customerOrders.set(order.number, order.postingDate);
-  }
-
   const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
+  const [itemsPayload, posted] = await Promise.all([
+    loadItems(),
+    loadPostedInvoiceLinePayloads(),
+  ]);
+
   const itemMeta = new Map<string, Item>();
   for (const item of itemsPayload.value ?? []) {
     if (item.number) itemMeta.set(item.number, item);
@@ -1207,73 +1269,164 @@ export async function getCustomerProductSales(
     {
       itemNo: string;
       name: string;
-      sales: number;
+      salesIncl: number;
+      salesExcl: number;
       quantity: number;
-      orderCount: number;
-      orders: Set<string>;
+      lineCount: number;
     }
   >();
-  let totalSales = 0;
+  let totalIncl = 0;
+  let totalExcl = 0;
   let totalQuantity = 0;
   let matchedLineCount = 0;
+  let orderCount = 0;
+  const orderDocs = new Set<string>();
 
-  for (const line of linesPayload.value ?? []) {
-    const docNo = String(line.docNo ?? "");
-    const postingDate = customerOrders.get(docNo);
-    if (!postingDate) continue;
-
-    const qty = Number(line.quantityInvoiced ?? 0);
-    if (qty <= 0) continue;
-    const itemNo = String(line.itemNo ?? "");
+  function matchesProduct(itemNo: string): boolean {
+    if (!productTerm) return true;
     const meta = itemMeta.get(itemNo);
-    if (productTerm) {
-      const haystack = [itemNo, meta?.displayName, meta?.itemCategory]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      if (!haystack.includes(productTerm)) continue;
+    const haystack = [itemNo, meta?.displayName, meta?.itemCategory]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(productTerm);
+  }
+
+  if (posted.usePostedInvoices) {
+    for (const line of posted.invoiceLines) {
+      if (String(line.sellToCustomerNo ?? "") !== resolved.customerNo) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!postingDate || !period.matches(postingDate)) continue;
+      const qty = Number(line.quantity ?? 0);
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || qty <= 0 || !matchesProduct(itemNo)) continue;
+
+      const salesIncl = postedLineSalesIncl(line);
+      const salesExcl = postedLineSalesExcl(line);
+      totalIncl += salesIncl;
+      totalExcl += salesExcl;
+      totalQuantity += qty;
+      matchedLineCount += 1;
+      if (line.documentNo) orderDocs.add(String(line.documentNo));
+
+      const meta = itemMeta.get(itemNo);
+      const agg =
+        byItem.get(itemNo) ??
+        {
+          itemNo,
+          name: meta?.displayName ?? "",
+          salesIncl: 0,
+          salesExcl: 0,
+          quantity: 0,
+          lineCount: 0,
+        };
+      agg.salesIncl += salesIncl;
+      agg.salesExcl += salesExcl;
+      agg.quantity += qty;
+      agg.lineCount += 1;
+      byItem.set(itemNo, agg);
     }
 
-    const sales = qty * Number(line.unitPrice ?? 0);
-    totalSales += sales;
-    totalQuantity += qty;
-    matchedLineCount += 1;
+    for (const line of posted.crMemoLines) {
+      if (String(line.sellToCustomerNo ?? "") !== resolved.customerNo) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!postingDate || !period.matches(postingDate)) continue;
+      const qty = Number(line.quantity ?? 0);
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || qty <= 0 || !matchesProduct(itemNo)) continue;
 
-    const agg =
-      byItem.get(itemNo) ??
-      {
-        itemNo,
-        name: meta?.displayName ?? "",
-        sales: 0,
-        quantity: 0,
-        orderCount: 0,
-        orders: new Set<string>(),
-      };
-    if (!agg.orders.has(docNo)) {
-      agg.orders.add(docNo);
-      agg.orderCount = agg.orders.size;
+      const salesIncl = -Math.abs(postedLineSalesIncl(line));
+      const salesExcl = -Math.abs(postedLineSalesExcl(line));
+      totalIncl += salesIncl;
+      totalExcl += salesExcl;
+      totalQuantity -= qty;
+      matchedLineCount += 1;
+      if (line.documentNo) orderDocs.add(String(line.documentNo));
+
+      const meta = itemMeta.get(itemNo);
+      const agg =
+        byItem.get(itemNo) ??
+        {
+          itemNo,
+          name: meta?.displayName ?? "",
+          salesIncl: 0,
+          salesExcl: 0,
+          quantity: 0,
+          lineCount: 0,
+        };
+      agg.salesIncl += salesIncl;
+      agg.salesExcl += salesExcl;
+      agg.quantity -= qty;
+      agg.lineCount += 1;
+      byItem.set(itemNo, agg);
     }
-    agg.sales += sales;
-    agg.quantity += qty;
-    byItem.set(itemNo, agg);
+
+    orderCount = orderDocs.size;
+  } else {
+    const [ordersPayload, linesPayload] = await Promise.all([
+      loadSalesOrders(),
+      loadSalesOrderLines(),
+    ]);
+    if (ordersPayload.error) return { error: ordersPayload.error };
+    if (linesPayload.error) return { error: linesPayload.error };
+
+    const customerOrders = new Map<string, string>();
+    for (const order of ordersPayload.value ?? []) {
+      if (order.customerNumber !== resolved.customerNo || !order.number) continue;
+      if (!order.postingDate || !period.matches(order.postingDate)) continue;
+      customerOrders.set(order.number, order.postingDate);
+    }
+
+    for (const line of linesPayload.value ?? []) {
+      const docNo = String(line.docNo ?? "");
+      const postingDate = customerOrders.get(docNo);
+      if (!postingDate) continue;
+
+      const qty = Number(line.quantityInvoiced ?? 0);
+      if (qty <= 0) continue;
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || !matchesProduct(itemNo)) continue;
+
+      const sales = qty * Number(line.unitPrice ?? 0);
+      totalIncl += sales;
+      totalExcl += sales;
+      totalQuantity += qty;
+      matchedLineCount += 1;
+
+      const meta = itemMeta.get(itemNo);
+      const agg =
+        byItem.get(itemNo) ??
+        {
+          itemNo,
+          name: meta?.displayName ?? "",
+          salesIncl: 0,
+          salesExcl: 0,
+          quantity: 0,
+          lineCount: 0,
+        };
+      agg.salesIncl += sales;
+      agg.salesExcl += sales;
+      agg.quantity += qty;
+      agg.lineCount += 1;
+      byItem.set(itemNo, agg);
+    }
+
+    orderCount = customerOrders.size;
   }
 
   const items = [...byItem.values()]
     .map((row) => ({
       itemNo: row.itemNo,
       name: row.name,
-      salesExcludingTax: round(row.sales),
+      salesIncludingTax: round(row.salesIncl),
+      salesExcludingTax: round(row.salesExcl),
       quantityInvoiced: round(row.quantity),
-      orderCount: row.orderCount,
+      lineCount: row.lineCount,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
     .slice(0, limit);
 
-  const orderList = [...customerOrders.entries()]
-    .sort((a, b) => a[1].localeCompare(b[1]))
-    .map(([orderNo, postingDate]) => ({ orderNo, postingDate }));
-
-  if (items.length === 0 && customerOrders.size === 0) {
+  if (items.length === 0 && matchedLineCount === 0) {
     return {
       currency: "NPR",
       customerNo: resolved.customerNo,
@@ -1281,10 +1434,10 @@ export async function getCustomerProductSales(
       period: period.label,
       productQuery: productTerm || null,
       message:
-        "No invoiced sales order lines matched this customer and date filter.",
-      ordersInPeriod: [],
+        "No invoiced product lines matched this customer and date filter.",
+      orderCount: 0,
       items: [],
-      _syncedAt: linesPayload._syncedAt,
+      _syncedAt: posted.syncedAt,
     };
   }
 
@@ -1294,15 +1447,18 @@ export async function getCustomerProductSales(
     name: resolved.name,
     period: period.label,
     productQuery: productTerm || null,
-    basis:
-      "Customer sales order lines in the filtered posting-date window (quantityInvoiced × unitPrice).",
-    orderCount: customerOrders.size,
-    ordersInPeriod: orderList.slice(0, 30),
-    totalSalesExcludingTax: round(totalSales),
+    displayNote:
+      "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
+    basis: posted.usePostedInvoices
+      ? "Posted sales invoice lines (amountIncludingVAT) minus credit memo lines for this customer."
+      : "Customer sales order lines in the filtered posting-date window (quantityInvoiced × unitPrice).",
+    orderCount,
+    totalSalesIncludingTax: round(totalIncl),
+    totalSalesExcludingTax: round(totalExcl),
     totalQuantityInvoiced: round(totalQuantity),
     matchedLineCount,
     items,
-    _syncedAt: linesPayload._syncedAt,
+    _syncedAt: posted.syncedAt,
   };
 }
 
@@ -1390,7 +1546,17 @@ export async function listBranches(): Promise<unknown> {
         code: branch.code,
         name: branch.name,
         aliases: branch.aliases,
-        allTimeInvoiceSales: byCode.get(branch.code)?.salesExcludingTax ?? 0,
+        allTimeInvoiceSalesIncludingTax:
+          byCode.get(branch.code)?.salesIncludingTax ??
+          byCode.get(branch.code)?.salesExcludingTax ??
+          0,
+        allTimeInvoiceSalesExcludingTax:
+          byCode.get(branch.code)?.salesExcludingTax ?? 0,
+        /** @deprecated use allTimeInvoiceSalesIncludingTax */
+        allTimeInvoiceSales:
+          byCode.get(branch.code)?.salesIncludingTax ??
+          byCode.get(branch.code)?.salesExcludingTax ??
+          0,
         allTimeInvoices: byCode.get(branch.code)?.invoices ?? 0,
       })),
       _syncedAt: cached._builtAt,
@@ -1431,9 +1597,14 @@ export async function getBranchWiseSales(
     return {
       currency: "NPR",
       period: period.label,
+      displayNote:
+        "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
       basis:
-        "Posted sales invoices (line.amount totals) minus credit memos. Branch = accountability center / document prefix.",
-      totalSalesExcludingTax: cached.allTime.totalSales,
+        "Posted sales invoices (amountIncludingVAT) minus credit memos. Branch = accountability center / document prefix.",
+      totalSalesIncludingTax:
+        cached.allTime.totalSalesIncludingTax ?? cached.allTime.totalSales,
+      totalSalesExcludingTax:
+        cached.allTime.totalSalesExcludingTax ?? cached.allTime.totalSales,
       branchCount: cached.allTime.branches.length,
       branches: cached.allTime.branches,
       currentNepaliFiscalYear: fyLabel
@@ -1548,6 +1719,7 @@ function branchFiscalMonthRows(
       bsMonth: BS_MONTHS[monthIndex],
       monthIndex,
       bsYear,
+      salesIncludingTax: round(agg.sales),
       salesExcludingTax: round(agg.sales),
       invoices: agg.invoices,
     };
@@ -1589,7 +1761,13 @@ export async function getSalesByBranch(
 
     if (wantsMonthly && fyLabel) {
       const months = branchMonthlyFromCache(cached, resolved.code, fyLabel);
-      const fySales = round(
+      const fySalesIncl = round(
+        months.reduce(
+          (sum, m) => sum + (m.salesIncludingTax ?? m.salesExcludingTax),
+          0,
+        ),
+      );
+      const fySalesExcl = round(
         months.reduce((sum, m) => sum + m.salesExcludingTax, 0),
       );
       const fyInvoices = months.reduce((sum, m) => sum + m.invoices, 0);
@@ -1601,11 +1779,16 @@ export async function getSalesByBranch(
         calendar: "Bikram Sambat",
         fiscalYear: fyLabel,
         period: `Nepali FY ${fyLabel}`,
+        displayNote:
+          "Present totalSalesIncludingTax and byNepaliMonth.salesIncludingTax (Incl. VAT).",
         basis:
-          "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code. Months in fiscal order (Shrawan → Ashadh).",
-        totalSalesExcludingTax: fySales,
+          "Posted sales invoices (amountIncludingVAT) by branch. Months in fiscal order (Shrawan → Ashadh).",
+        totalSalesIncludingTax: fySalesIncl,
+        totalSalesExcludingTax: fySalesExcl,
         invoiceCount: fyInvoices,
         byNepaliMonth: months,
+        allTimeSalesIncludingTax:
+          row?.salesIncludingTax ?? row?.salesExcludingTax ?? 0,
         allTimeSalesExcludingTax: row?.salesExcludingTax ?? 0,
         allTimeInvoices: row?.invoices ?? 0,
         _syncedAt: cached._builtAt,
@@ -1617,13 +1800,19 @@ export async function getSalesByBranch(
       branchCode: resolved.code,
       branchName: resolved.name,
       period: period.label,
+      displayNote:
+        "Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT).",
       basis:
-        "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code.",
+        "Posted sales invoices (amountIncludingVAT) by branch accountability center / document prefix.",
+      totalSalesIncludingTax:
+        row?.salesIncludingTax ?? row?.salesExcludingTax ?? 0,
       totalSalesExcludingTax: row?.salesExcludingTax ?? 0,
       invoiceCount: row?.invoices ?? 0,
       currentNepaliFiscalYear: fyLabel
         ? {
             label: fyLabel,
+            salesIncludingTax:
+              fyRow?.salesIncludingTax ?? fyRow?.salesExcludingTax ?? 0,
             salesExcludingTax: fyRow?.salesExcludingTax ?? 0,
             invoices: fyRow?.invoices ?? 0,
           }

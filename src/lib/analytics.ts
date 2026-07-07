@@ -75,6 +75,7 @@ export async function getSalesSummary(): Promise<unknown> {
     postingDate?: string;
     branchCode?: string;
     salesAmount?: number;
+    salesAmountIncludingTax?: number;
     documentKind?: "invoice" | "credit_memo";
   }>;
 
@@ -84,15 +85,22 @@ export async function getSalesSummary(): Promise<unknown> {
     postedPayload.value.length > 0;
 
   if (usePostedDocuments) {
-    let grossInvoiceSales = 0;
-    let creditMemoSales = 0;
+    let grossInvoiceSalesIncl = 0;
+    let grossInvoiceSalesExcl = 0;
+    let creditMemoSalesIncl = 0;
+    let creditMemoSalesExcl = 0;
     let invoiceCount = 0;
     let earliest: Date | null = null;
     let latest: Date | null = null;
 
-    const byAdYear: Record<string, { sales: number; invoices: number }> = {};
-    const byFiscalYear: Record<string, { sales: number; invoices: number }> =
-      {};
+    const byAdYear: Record<
+      string,
+      { salesIncl: number; salesExcl: number; invoices: number }
+    > = {};
+    const byFiscalYear: Record<
+      string,
+      { salesIncl: number; salesExcl: number; invoices: number }
+    > = {};
 
     for (const doc of postedPayload.value ?? []) {
       const date = parseDate(doc.postingDate);
@@ -100,39 +108,59 @@ export async function getSalesSummary(): Promise<unknown> {
       if (!earliest || date < earliest) earliest = date;
       if (!latest || date > latest) latest = date;
 
-      const amount = Number(doc.salesAmount ?? 0);
+      const amountIncl = Number(
+        doc.salesAmountIncludingTax ?? doc.salesAmount ?? 0,
+      );
+      const amountExcl = Number(doc.salesAmount ?? amountIncl);
       const isInvoice = doc.documentKind === "invoice";
 
       if (isInvoice) {
-        grossInvoiceSales += amount;
+        grossInvoiceSalesIncl += amountIncl;
+        grossInvoiceSalesExcl += amountExcl;
         invoiceCount += 1;
 
         const adYear = String(date.getFullYear());
-        byAdYear[adYear] ??= { sales: 0, invoices: 0 };
-        byAdYear[adYear].sales += amount;
+        byAdYear[adYear] ??= { salesIncl: 0, salesExcl: 0, invoices: 0 };
+        byAdYear[adYear].salesIncl += amountIncl;
+        byAdYear[adYear].salesExcl += amountExcl;
         byAdYear[adYear].invoices += 1;
 
         const fy = getNepaliFiscalYear(date);
         if (fy) {
-          byFiscalYear[fy.label] ??= { sales: 0, invoices: 0 };
-          byFiscalYear[fy.label].sales += amount;
+          byFiscalYear[fy.label] ??= { salesIncl: 0, salesExcl: 0, invoices: 0 };
+          byFiscalYear[fy.label].salesIncl += amountIncl;
+          byFiscalYear[fy.label].salesExcl += amountExcl;
           byFiscalYear[fy.label].invoices += 1;
         }
       } else {
-        creditMemoSales += amount;
+        creditMemoSalesIncl += amountIncl;
+        creditMemoSalesExcl += amountExcl;
       }
     }
 
     const currentFy = getNepaliFiscalYear(new Date());
     const currentFyLabel = currentFy?.label ?? null;
+    const netIncl = grossInvoiceSalesIncl - Math.abs(creditMemoSalesIncl);
+    const netExcl = grossInvoiceSalesExcl - Math.abs(creditMemoSalesExcl);
 
     return {
       currency: "NPR",
-      note: "Sales figures are net of tax from posted sales invoices (line.amount totals) minus credit memos. Profit is not included because COGS/cost data is not synced.",
+      displayNote:
+        "Present netSalesIncludingTax and salesIncludingTax fields as primary amounts (Incl. VAT).",
+      note: "Sales from posted invoices. Incl. VAT uses amountIncludingVAT; excl. VAT uses line.amount (ledger basis). Profit is not included because COGS/cost data is not synced.",
       allTime: {
-        grossInvoiceSales: round(grossInvoiceSales),
-        creditMemos: round(creditMemoSales),
-        netSales: round(grossInvoiceSales - Math.abs(creditMemoSales)),
+        grossInvoiceSalesIncludingTax: round(grossInvoiceSalesIncl),
+        grossInvoiceSalesExcludingTax: round(grossInvoiceSalesExcl),
+        creditMemosIncludingTax: round(creditMemoSalesIncl),
+        creditMemosExcludingTax: round(creditMemoSalesExcl),
+        netSalesIncludingTax: round(netIncl),
+        netSalesExcludingTax: round(netExcl),
+        /** @deprecated use netSalesIncludingTax */
+        grossInvoiceSales: round(grossInvoiceSalesExcl),
+        /** @deprecated use netSalesIncludingTax */
+        creditMemos: round(creditMemoSalesExcl),
+        /** @deprecated use netSalesIncludingTax */
+        netSales: round(netExcl),
         invoiceCount,
         dateRange: {
           from: earliest?.toISOString().slice(0, 10) ?? null,
@@ -142,19 +170,42 @@ export async function getSalesSummary(): Promise<unknown> {
       currentNepaliFiscalYear: currentFyLabel
         ? {
             label: currentFyLabel,
-            sales: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
+            salesIncludingTax: round(
+              byFiscalYear[currentFyLabel]?.salesIncl ?? 0,
+            ),
+            salesExcludingTax: round(
+              byFiscalYear[currentFyLabel]?.salesExcl ?? 0,
+            ),
+            /** @deprecated use salesIncludingTax */
+            sales: round(byFiscalYear[currentFyLabel]?.salesExcl ?? 0),
             invoices: byFiscalYear[currentFyLabel]?.invoices ?? 0,
           }
         : null,
       byAdYear: Object.fromEntries(
         Object.entries(byAdYear)
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([year, v]) => [year, { sales: round(v.sales), invoices: v.invoices }]),
+          .map(([year, v]) => [
+            year,
+            {
+              salesIncludingTax: round(v.salesIncl),
+              salesExcludingTax: round(v.salesExcl),
+              sales: round(v.salesExcl),
+              invoices: v.invoices,
+            },
+          ]),
       ),
       byNepaliFiscalYear: Object.fromEntries(
         Object.entries(byFiscalYear)
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([fy, v]) => [fy, { sales: round(v.sales), invoices: v.invoices }]),
+          .map(([fy, v]) => [
+            fy,
+            {
+              salesIncludingTax: round(v.salesIncl),
+              salesExcludingTax: round(v.salesExcl),
+              sales: round(v.salesExcl),
+              invoices: v.invoices,
+            },
+          ]),
       ),
       _syncedAt: postedPayload._syncedAt,
       _source: "posted_invoices",
@@ -207,8 +258,16 @@ export async function getSalesSummary(): Promise<unknown> {
 
   return {
     currency: "NPR",
+    displayNote:
+      "Ledger sync has excl-VAT amounts only; present netSalesExcludingTax and label as Excl. VAT.",
     note: "Sales figures are net of tax (salesLcy) from customer ledger invoice entries. Profit is not included because COGS/cost data is not synced.",
     allTime: {
+      grossInvoiceSalesIncludingTax: round(grossInvoiceSales),
+      grossInvoiceSalesExcludingTax: round(grossInvoiceSales),
+      creditMemosIncludingTax: round(creditMemoSales),
+      creditMemosExcludingTax: round(creditMemoSales),
+      netSalesIncludingTax: round(grossInvoiceSales - Math.abs(creditMemoSales)),
+      netSalesExcludingTax: round(grossInvoiceSales - Math.abs(creditMemoSales)),
       grossInvoiceSales: round(grossInvoiceSales),
       creditMemos: round(creditMemoSales),
       netSales: round(grossInvoiceSales - Math.abs(creditMemoSales)),
@@ -221,6 +280,8 @@ export async function getSalesSummary(): Promise<unknown> {
     currentNepaliFiscalYear: currentFyLabel
       ? {
           label: currentFyLabel,
+          salesIncludingTax: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
+          salesExcludingTax: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
           sales: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
           invoices: byFiscalYear[currentFyLabel]?.invoices ?? 0,
         }
@@ -228,12 +289,28 @@ export async function getSalesSummary(): Promise<unknown> {
     byAdYear: Object.fromEntries(
       Object.entries(byAdYear)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([year, v]) => [year, { sales: round(v.sales), invoices: v.invoices }]),
+        .map(([year, v]) => [
+          year,
+          {
+            salesIncludingTax: round(v.sales),
+            salesExcludingTax: round(v.sales),
+            sales: round(v.sales),
+            invoices: v.invoices,
+          },
+        ]),
     ),
     byNepaliFiscalYear: Object.fromEntries(
       Object.entries(byFiscalYear)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([fy, v]) => [fy, { sales: round(v.sales), invoices: v.invoices }]),
+        .map(([fy, v]) => [
+          fy,
+          {
+            salesIncludingTax: round(v.sales),
+            salesExcludingTax: round(v.sales),
+            sales: round(v.sales),
+            invoices: v.invoices,
+          },
+        ]),
     ),
     _syncedAt: payload._syncedAt,
     _source: "customer_ledger",
@@ -834,15 +911,61 @@ type PostedInvoiceLine = {
   quantity?: number;
   unitOfMeasureCode?: string;
   unitPrice?: number;
+  lineAmount?: number;
   lineAmountExclVAT?: number;
   lineAmountInclVAT?: number;
   postingDate?: string;
+  sellToCustomerNo?: string;
   itemCategoryCode?: string;
 };
 
 type PostedCrMemoLine = PostedInvoiceLine & {
   returnReasonCode?: string;
 };
+
+export function postedLineSalesIncl(line: {
+  lineAmountInclVAT?: number;
+  lineAmountExclVAT?: number;
+  lineAmount?: number;
+}): number {
+  return Number(
+    line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? line.lineAmount ?? 0,
+  );
+}
+
+export function postedLineSalesExcl(line: {
+  lineAmountExclVAT?: number;
+  lineAmount?: number;
+}): number {
+  return Number(line.lineAmountExclVAT ?? line.lineAmount ?? 0);
+}
+
+export async function loadPostedInvoiceLinePayloads(): Promise<{
+  usePostedInvoices: boolean;
+  invoiceLines: PostedInvoiceLine[];
+  crMemoLines: PostedCrMemoLine[];
+  syncedAt?: string;
+}> {
+  const [invoiceLinesPayload, crMemoLinesPayload] = await Promise.all([
+    getMirror("salesInvoiceLines") as Promise<
+      MirrorPayload<PostedInvoiceLine>
+    >,
+    getMirror("salesCrMemoLines") as Promise<MirrorPayload<PostedCrMemoLine>>,
+  ]);
+
+  const usePostedInvoices =
+    !invoiceLinesPayload.error &&
+    Array.isArray(invoiceLinesPayload.value) &&
+    invoiceLinesPayload.value.length > 0;
+
+  return {
+    usePostedInvoices,
+    invoiceLines: invoiceLinesPayload.value ?? [],
+    crMemoLines: crMemoLinesPayload.value ?? [],
+    syncedAt:
+      invoiceLinesPayload._syncedAt ?? crMemoLinesPayload._syncedAt,
+  };
+}
 
 /**
  * Product-level posted sales from synced invoice lines (Choco Delight) or,
@@ -1042,28 +1165,34 @@ export async function getProductSales(
 
   const items = [...byItem.values()]
     .map((row) => ({
-      ...row,
+      itemNo: row.itemNo,
+      name: row.name,
+      category: row.category,
+      unitOfMeasureCode: row.unitOfMeasureCode,
       quantityInvoiced: round(row.quantityInvoiced),
-      salesExcludingTax: round(row.salesExcludingTax),
       salesIncludingTax: round(row.salesIncludingTax),
-      averageUnitPrice:
-        row.quantityInvoiced > 0
-          ? round(row.salesExcludingTax / row.quantityInvoiced)
-          : 0,
+      salesExcludingTax: round(row.salesExcludingTax),
       averageUnitPriceInclTax:
         row.quantityInvoiced > 0
           ? round(row.salesIncludingTax / row.quantityInvoiced)
           : 0,
+      averageUnitPrice:
+        row.quantityInvoiced > 0
+          ? round(row.salesExcludingTax / row.quantityInvoiced)
+          : 0,
+      lineCount: row.lineCount,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
 
   return {
     currency: "NPR",
     query: query || null,
     period: period.label,
     itemNumbers: explicitItems.length ? explicitItems : null,
+    displayNote:
+      "Present totalSalesIncludingTax and salesIncludingTax as the primary amounts (Incl. VAT).",
     basis: usePostedInvoices
-      ? "Posted sales invoice lines (lineAmountExclVAT, lineAmountInclVAT / amountIncludingVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
+      ? "Posted sales invoice lines (lineAmountInclVAT / amountIncludingVAT, lineAmountExclVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
       : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. VAT-inclusive amount not available on this fallback.",
     dataCoverage: {
       from: earliest,
@@ -1072,13 +1201,13 @@ export async function getProductSales(
         ? "Uses synced salesInvoiceHeaders/salesCrMemos expand lines from BC custom API."
         : "Sales order line sync typically starts mid-2024. Run sync on Choco Delight for posted invoice lines.",
     },
-    totalSalesExcludingTax: round(totalSales),
     totalSalesIncludingTax: round(totalSalesIncludingTax),
+    totalSalesExcludingTax: round(totalSales),
     totalQuantityInvoiced: round(totalQuantity),
-    averageUnitPrice:
-      totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
     averageUnitPriceInclTax:
       totalQuantity > 0 ? round(totalSalesIncludingTax / totalQuantity) : 0,
+    averageUnitPrice:
+      totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
     matchedLineCount: matchedLines,
     items,
     _syncedAt:

@@ -40,6 +40,7 @@ async function main() {
           postingDate?: string;
           branchCode?: string;
           salesAmount?: number;
+          salesAmountIncludingTax?: number;
           documentKind?: "invoice" | "credit_memo";
         }>;
         error?: string;
@@ -52,6 +53,9 @@ async function main() {
             postingDate: String(doc.postingDate ?? ""),
             branchCode: String(doc.branchCode ?? ""),
             salesAmount: Number(doc.salesAmount ?? 0),
+            salesAmountIncludingTax: Number(
+              doc.salesAmountIncludingTax ?? doc.salesAmount ?? 0,
+            ),
             documentKind: doc.documentKind ?? "invoice",
           })),
         );
