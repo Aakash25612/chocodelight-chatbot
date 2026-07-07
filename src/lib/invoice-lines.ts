@@ -25,6 +25,7 @@ type CrMemoHeader = {
   locationCode?: string;
   shortcutDimension1Code?: string;
   accountabilityCenter?: string;
+  salespersonCode?: string;
   salesCrMemoLines?: CrMemoLine[];
 };
 
@@ -81,6 +82,7 @@ export type FlatInvoiceLine = {
   sellToCustomerNo: string;
   itemCategoryCode: string;
   accountabilityCenter: string;
+  salespersonCode: string;
   orderNo: string;
 };
 
@@ -99,6 +101,8 @@ export type FlatCrMemoLine = {
   postingDate: string;
   sellToCustomerNo: string;
   returnReasonCode: string;
+  accountabilityCenter: string;
+  salespersonCode: string;
 };
 
 export type PostedSalesDocument = {
@@ -235,7 +239,10 @@ export function flattenSalesInvoiceLines(
           line.sellToCustomerNo ?? header.sellToCustomerNo ?? "",
         ),
         itemCategoryCode: String(line.itemCategoryCode ?? ""),
-        accountabilityCenter: String(line.accountabilityCenter ?? ""),
+        accountabilityCenter: String(
+          line.accountabilityCenter ?? header.accountabilityCenter ?? "",
+        ),
+        salespersonCode: String(header.salespersonCode ?? ""),
         orderNo: String(line.orderNo ?? ""),
       });
     }
@@ -280,6 +287,8 @@ export function flattenSalesCrMemoLines(headers: CrMemoHeader[]): FlatCrMemoLine
           line.sellToCustomerNo ?? header.sellToCustomerNo ?? "",
         ),
         returnReasonCode: String(line.returnReasonCode ?? ""),
+        accountabilityCenter: String(header.accountabilityCenter ?? ""),
+        salespersonCode: String(header.salespersonCode ?? ""),
       });
     }
   }

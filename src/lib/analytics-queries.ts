@@ -4,6 +4,10 @@ import {
   loadPostedInvoiceLinePayloads,
   postedLineSalesExcl,
   postedLineSalesIncl,
+  postedLineVat,
+  buildNepaliFiscalMonthSlots,
+  applyPostedLineToNepaliMonth,
+  serializeNepaliMonthSlots,
 } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
 import {
@@ -11,6 +15,7 @@ import {
   listBranchDefinitions,
   resolveBranch,
   branchNameForCode,
+  normalizeBranchCode,
 } from "./branches";
 import {
   loadBranchSalesCache,
@@ -785,22 +790,128 @@ export async function getTopCustomersByNepaliMonth(input?: {
   };
 }
 
-/** Sales totals and optional monthly breakdown for one customer. */
+/** Sales totals and monthly breakdown for one customer (posted invoice lines when synced). */
 export async function getCustomerSales(input?: {
   customerNo?: string;
   query?: string;
   year?: number;
   month?: number;
+  fiscalYearStart?: number;
 }): Promise<unknown> {
   const resolved = await resolveCustomerNo(input);
   if ("error" in resolved) return resolved;
+
+  const posted = await loadPostedInvoiceLinePayloads();
+  const customerNo = resolved.customerNo;
+  const fiscalYearStart = input?.fiscalYearStart;
+
+  function matchesFilter(postingDate: string): boolean {
+    const date = parseDate(postingDate);
+    if (!date) return false;
+    if (fiscalYearStart) {
+      const fy = getNepaliFiscalYear(date);
+      return fy?.startYear === fiscalYearStart;
+    }
+    if (input?.year || input?.month) {
+      return inAdPeriod(date, input.year, input.month);
+    }
+    return true;
+  }
+
+  if (posted.usePostedInvoices) {
+    let totalIncl = 0;
+    let totalExcl = 0;
+    const invoiceDocs = new Set<string>();
+    const byAdMonth = new Map<
+      string,
+      { salesIncl: number; invoices: Set<string> }
+    >();
+    const nepaliSlots = fiscalYearStart
+      ? buildNepaliFiscalMonthSlots(fiscalYearStart)
+      : null;
+
+    for (const line of posted.invoiceLines) {
+      if (String(line.sellToCustomerNo ?? "") !== customerNo) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!matchesFilter(postingDate)) continue;
+
+      const incl = postedLineSalesIncl(line);
+      const excl = postedLineSalesExcl(line);
+      totalIncl += incl;
+      totalExcl += excl;
+      const doc = String(line.documentNo ?? "");
+      if (doc) invoiceDocs.add(doc);
+
+      const date = parseDate(postingDate);
+      if (date) {
+        const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+        const agg =
+          byAdMonth.get(key) ?? { salesIncl: 0, invoices: new Set<string>() };
+        agg.salesIncl += incl;
+        if (doc) agg.invoices.add(doc);
+        byAdMonth.set(key, agg);
+      }
+      if (nepaliSlots && fiscalYearStart) {
+        applyPostedLineToNepaliMonth(nepaliSlots, line, fiscalYearStart, 1);
+      }
+    }
+
+    for (const line of posted.crMemoLines) {
+      if (String(line.sellToCustomerNo ?? "") !== customerNo) continue;
+      const postingDate = String(line.postingDate ?? "");
+      if (!matchesFilter(postingDate)) continue;
+      totalIncl -= Math.abs(postedLineSalesIncl(line));
+      totalExcl -= Math.abs(postedLineSalesExcl(line));
+      if (nepaliSlots && fiscalYearStart) {
+        applyPostedLineToNepaliMonth(nepaliSlots, line, fiscalYearStart, -1);
+      }
+    }
+
+    const byMonth = [...byAdMonth.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => {
+        const [year, month] = key.split("-");
+        return {
+          year: Number(year),
+          month: Number(month),
+          monthName: monthName(Number(month)),
+          salesIncludingTax: round(value.salesIncl),
+          invoices: value.invoices.size,
+        };
+      });
+
+    return {
+      currency: "NPR",
+      customerNo,
+      name: resolved.name,
+      period: {
+        fiscalYearStart: input?.fiscalYearStart ?? null,
+        fiscalYear: input?.fiscalYearStart
+          ? fiscalYearLabel(input.fiscalYearStart)
+          : null,
+        year: input?.year ?? "all_synced_years",
+        month: input?.month ?? null,
+      },
+      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      basis:
+        "Posted sales invoice lines (amountIncludingVAT) minus credit memos for this customer.",
+      totalSalesIncludingTax: round(totalIncl),
+      totalSalesExcludingTax: round(totalExcl),
+      invoiceCount: invoiceDocs.size,
+      byMonth,
+      byNepaliMonth: nepaliSlots
+        ? serializeNepaliMonthSlots(nepaliSlots)
+        : undefined,
+      _syncedAt: posted.syncedAt,
+    };
+  }
 
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
   const entries = (ledgerPayload.value ?? []).filter(
     (entry) =>
-      entryCustomerNo(entry) === resolved.customerNo &&
+      entryCustomerNo(entry) === customerNo &&
       entry.documentType === "Invoice",
   );
 
@@ -811,6 +922,10 @@ export async function getCustomerSales(input?: {
   for (const entry of entries) {
     const date = parseDate(entry.postingDate);
     if (!date) continue;
+    if (input?.fiscalYearStart) {
+      const fy = getNepaliFiscalYear(date);
+      if (!fy || fy.startYear !== input.fiscalYearStart) continue;
+    }
     if (input?.year || input?.month) {
       if (!inAdPeriod(date, input.year, input.month)) continue;
     }
@@ -833,6 +948,7 @@ export async function getCustomerSales(input?: {
         year: Number(year),
         month: Number(month),
         monthName: monthName(Number(month)),
+        salesIncludingTax: round(value.sales),
         salesExcludingTax: round(value.sales),
         invoices: value.invoices,
       };
@@ -840,13 +956,15 @@ export async function getCustomerSales(input?: {
 
   return {
     currency: "NPR",
-    customerNo: resolved.customerNo,
+    customerNo,
     name: resolved.name,
     period: {
+      fiscalYearStart: input?.fiscalYearStart ?? null,
       year: input?.year ?? "all_synced_years",
       month: input?.month ?? null,
     },
-    basis: "Customer ledger invoice entries (salesLcy).",
+    basis: "Customer ledger invoice entries (salesLcy). Run sync for Incl. VAT.",
+    totalSalesIncludingTax: round(totalSales),
     totalSalesExcludingTax: round(totalSales),
     invoiceCount,
     byMonth: monthly,
@@ -1659,7 +1777,7 @@ export async function getCustomerProductSales(
   };
 }
 
-/** Invoiced product sales grouped by salesperson code on sales orders. */
+/** Posted invoice sales grouped by salesperson code. */
 export async function getSalesBySalesperson(
   input?: { limit?: number } & DatePeriodInput,
 ): Promise<unknown> {
@@ -1668,19 +1786,89 @@ export async function getSalesBySalesperson(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
-  const [ordersPayload, linesPayload, salespersonsPayload] = await Promise.all([
-    loadSalesOrders(),
-    loadSalesOrderLines(),
+  const [posted, salespersonsPayload] = await Promise.all([
+    loadPostedInvoiceLinePayloads(),
     getMirror("salespersons") as Promise<
       MirrorPayload<{ code?: string; name?: string }>
     >,
   ]);
-  if (ordersPayload.error) return { error: ordersPayload.error };
 
   const spNames = new Map<string, string>();
   for (const sp of salespersonsPayload.value ?? []) {
     if (sp.code) spNames.set(sp.code, sp.name ?? sp.code);
   }
+
+  if (posted.usePostedInvoices) {
+    const bySp = new Map<
+      string,
+      {
+        code: string;
+        name: string;
+        salesIncl: number;
+        salesExcl: number;
+        lineCount: number;
+      }
+    >();
+    let totalIncl = 0;
+
+    for (const line of posted.invoiceLines) {
+      const postingDate = String(line.postingDate ?? "");
+      if (!period.matches(postingDate)) continue;
+      const code = String(line.salespersonCode ?? "").trim() || "(none)";
+      const incl = postedLineSalesIncl(line);
+      const excl = postedLineSalesExcl(line);
+      totalIncl += incl;
+      const agg =
+        bySp.get(code) ??
+        { code, name: spNames.get(code) ?? code, salesIncl: 0, salesExcl: 0, lineCount: 0 };
+      agg.salesIncl += incl;
+      agg.salesExcl += excl;
+      agg.lineCount += 1;
+      bySp.set(code, agg);
+    }
+
+    for (const line of posted.crMemoLines) {
+      const postingDate = String(line.postingDate ?? "");
+      if (!period.matches(postingDate)) continue;
+      const code = String(line.salespersonCode ?? "").trim() || "(none)";
+      const incl = -Math.abs(postedLineSalesIncl(line));
+      const excl = -Math.abs(postedLineSalesExcl(line));
+      totalIncl += incl;
+      const agg =
+        bySp.get(code) ??
+        { code, name: spNames.get(code) ?? code, salesIncl: 0, salesExcl: 0, lineCount: 0 };
+      agg.salesIncl += incl;
+      agg.salesExcl += excl;
+      agg.lineCount += 1;
+      bySp.set(code, agg);
+    }
+
+    return {
+      currency: "NPR",
+      period: period.label,
+      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      basis:
+        "Posted sales invoice lines grouped by header salespersonCode (amountIncludingVAT) minus credit memos.",
+      totalSalesIncludingTax: round(totalIncl),
+      salespersons: [...bySp.values()]
+        .map((row) => ({
+          code: row.code,
+          name: row.name,
+          salesIncludingTax: round(row.salesIncl),
+          salesExcludingTax: round(row.salesExcl),
+          lineCount: row.lineCount,
+        }))
+        .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
+        .slice(0, limit),
+      _syncedAt: posted.syncedAt,
+    };
+  }
+
+  const [ordersPayload, linesPayload] = await Promise.all([
+    loadSalesOrders(),
+    loadSalesOrderLines(),
+  ]);
+  if (ordersPayload.error) return { error: ordersPayload.error };
 
   const orderMeta = new Map<string, { postingDate?: string; salesperson?: string }>();
   for (const order of ordersPayload.value ?? []) {
@@ -1717,13 +1905,322 @@ export async function getSalesBySalesperson(
   return {
     currency: "NPR",
     period: period.label,
-    basis: "Sales order lines grouped by order.salesperson.",
-    totalSalesExcludingTax: round(totalSales),
+    basis: "Sales order lines grouped by order.salesperson (fallback). Run sync for posted invoices.",
+    totalSalesIncludingTax: round(totalSales),
     salespersons: [...bySp.values()]
-      .map((row) => ({ ...row, salesExcludingTax: round(row.sales) }))
-      .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+      .map((row) => ({
+        code: row.code,
+        name: row.name,
+        salesIncludingTax: round(row.sales),
+        salesExcludingTax: round(row.sales),
+        lineCount: row.lineCount,
+      }))
+      .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
       .slice(0, limit),
     _syncedAt: linesPayload._syncedAt,
+  };
+}
+
+/** Product sales for one branch/depot from posted invoice lines. */
+export async function getBranchProductSales(
+  input?: {
+    query?: string;
+    branchCode?: string;
+    productQuery?: string;
+    monthlyBreakdown?: boolean;
+  } & DatePeriodInput,
+): Promise<unknown> {
+  const resolved = resolveBranch({
+    query: input?.query,
+    branchCode: input?.branchCode,
+  });
+  if ("error" in resolved) return resolved;
+
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
+  const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
+  const wantsMonthly = input?.monthlyBreakdown ?? false;
+  const currentFyStart = getCurrentFiscalYearStart();
+  const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
+
+  const [posted, itemsPayload] = await Promise.all([
+    loadPostedInvoiceLinePayloads(),
+    loadItems(),
+  ]);
+
+  const itemMeta = new Map<string, Item>();
+  for (const item of itemsPayload.value ?? []) {
+    if (item.number) itemMeta.set(item.number, item);
+  }
+
+  function matchesProduct(itemNo: string, description?: string): boolean {
+    if (!productTerm) return true;
+    const meta = itemMeta.get(itemNo);
+    const haystack = [itemNo, meta?.displayName, meta?.itemCategory, description]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(productTerm);
+  }
+
+  if (!posted.usePostedInvoices) {
+    return {
+      error:
+        "Branch product sales requires synced posted invoice lines. Run npm run sync:bc from VPN.",
+      branchCode: resolved.code,
+      branchName: resolved.name,
+    };
+  }
+
+  let totalIncl = 0;
+  let totalExcl = 0;
+  let totalQty = 0;
+  let matchedLines = 0;
+  const byItem = new Map<
+    string,
+    {
+      itemNo: string;
+      name: string;
+      quantity: number;
+      salesIncl: number;
+      salesExcl: number;
+      lineCount: number;
+    }
+  >();
+  const nepaliSlots =
+    wantsMonthly && currentFyStart
+      ? buildNepaliFiscalMonthSlots(currentFyStart)
+      : null;
+
+  function lineMatchesPeriod(postingDate: string): boolean {
+    const date = parseDate(postingDate);
+    if (!date) return false;
+    if (wantsMonthly && currentFyStart && !hasCustomPeriod(input)) {
+      const fy = getNepaliFiscalYear(date);
+      return fy?.startYear === currentFyStart;
+    }
+    return period.matches(postingDate);
+  }
+
+  for (const line of posted.invoiceLines) {
+    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    if (branch !== resolved.code) continue;
+    const postingDate = String(line.postingDate ?? "");
+    if (!lineMatchesPeriod(postingDate)) continue;
+    const itemNo = String(line.itemNo ?? "");
+    if (!itemNo || !matchesProduct(itemNo, line.description)) continue;
+    const qty = Number(line.quantity ?? 0);
+    if (qty <= 0) continue;
+
+    const incl = postedLineSalesIncl(line);
+    const excl = postedLineSalesExcl(line);
+    totalIncl += incl;
+    totalExcl += excl;
+    totalQty += qty;
+    matchedLines += 1;
+
+    const meta = itemMeta.get(itemNo);
+    const agg =
+      byItem.get(itemNo) ??
+      {
+        itemNo,
+        name: meta?.displayName ?? String(line.description ?? ""),
+        quantity: 0,
+        salesIncl: 0,
+        salesExcl: 0,
+        lineCount: 0,
+      };
+    agg.quantity += qty;
+    agg.salesIncl += incl;
+    agg.salesExcl += excl;
+    agg.lineCount += 1;
+    byItem.set(itemNo, agg);
+
+    if (nepaliSlots && currentFyStart) {
+      applyPostedLineToNepaliMonth(nepaliSlots, line, currentFyStart, 1);
+    }
+  }
+
+  for (const line of posted.crMemoLines) {
+    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    if (branch !== resolved.code) continue;
+    const postingDate = String(line.postingDate ?? "");
+    if (!lineMatchesPeriod(postingDate)) continue;
+    const itemNo = String(line.itemNo ?? "");
+    if (!itemNo || !matchesProduct(itemNo, line.description)) continue;
+    const qty = Number(line.quantity ?? 0);
+    if (qty <= 0) continue;
+
+    totalIncl -= Math.abs(postedLineSalesIncl(line));
+    totalExcl -= Math.abs(postedLineSalesExcl(line));
+    totalQty -= qty;
+    matchedLines += 1;
+
+    const meta = itemMeta.get(itemNo);
+    const agg =
+      byItem.get(itemNo) ??
+      {
+        itemNo,
+        name: meta?.displayName ?? "",
+        quantity: 0,
+        salesIncl: 0,
+        salesExcl: 0,
+        lineCount: 0,
+      };
+    agg.quantity -= qty;
+    agg.salesIncl -= Math.abs(postedLineSalesIncl(line));
+    agg.salesExcl -= Math.abs(postedLineSalesExcl(line));
+    agg.lineCount += 1;
+    byItem.set(itemNo, agg);
+
+    if (nepaliSlots && currentFyStart) {
+      applyPostedLineToNepaliMonth(nepaliSlots, line, currentFyStart, -1);
+    }
+  }
+
+  const items = [...byItem.values()]
+    .map((row) => ({
+      itemNo: row.itemNo,
+      name: row.name,
+      quantityInvoiced: round(row.quantity),
+      salesIncludingTax: round(row.salesIncl),
+      salesExcludingTax: round(row.salesExcl),
+      lineCount: row.lineCount,
+    }))
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
+
+  return {
+    currency: "NPR",
+    branchCode: resolved.code,
+    branchName: resolved.name,
+    productQuery: productTerm || null,
+    period: period.label,
+    fiscalYear: wantsMonthly ? fyLabel : null,
+    displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+    basis:
+      "Posted invoice lines filtered by branch accountabilityCenter and product keyword.",
+    totalSalesIncludingTax: round(totalIncl),
+    totalSalesExcludingTax: round(totalExcl),
+    totalQuantityInvoiced: round(totalQty),
+    matchedLineCount: matchedLines,
+    items,
+    byNepaliMonth:
+      wantsMonthly && nepaliSlots
+        ? serializeNepaliMonthSlots(nepaliSlots)
+        : undefined,
+    _syncedAt: posted.syncedAt,
+  };
+}
+
+/** VAT collected (incl − net excl) by Nepali fiscal year and branch. */
+export async function getVatReport(
+  input?: {
+    branchCode?: string;
+    fiscalYearStart?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+
+  const posted = await loadPostedInvoiceLinePayloads();
+  if (!posted.usePostedInvoices) {
+    return {
+      error:
+        "VAT report requires synced posted invoice lines. Run npm run sync:bc from VPN.",
+    };
+  }
+
+  const startYear =
+    input?.fiscalYearStart ??
+    getCurrentFiscalYearStart() ??
+    toBs(new Date())?.year ??
+    new Date().getFullYear();
+
+  const branchFilter = input?.branchCode?.trim()
+    ? normalizeBranchCode(input.branchCode.trim())
+    : null;
+
+  let totalIncl = 0;
+  let totalExcl = 0;
+  let totalVat = 0;
+  const byBranch = new Map<
+    string,
+    { salesIncl: number; salesExcl: number; vat: number; lineCount: number }
+  >();
+  const byMonth = buildNepaliFiscalMonthSlots(startYear);
+
+  function addLine(
+    line: {
+      postingDate?: string;
+      accountabilityCenter?: string;
+      lineAmountInclVAT?: number;
+      lineAmount?: number;
+      lineAmountExclVAT?: number;
+    },
+    sign: 1 | -1,
+  ): void {
+    const postingDate = String(line.postingDate ?? "");
+    const date = parseDate(postingDate);
+    if (!date || !period.matches(postingDate)) return;
+    if (!hasCustomPeriod(input)) {
+      const fy = getNepaliFiscalYear(date);
+      if (!fy || fy.startYear !== startYear) return;
+    }
+    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    if (branchFilter && branch !== branchFilter) return;
+
+    const incl = postedLineSalesIncl(line) * sign;
+    const excl = postedLineSalesExcl(line) * sign;
+    const vat = postedLineVat(line) * sign;
+    totalIncl += incl;
+    totalExcl += excl;
+    totalVat += vat;
+
+    const code = branch || "(none)";
+    const agg =
+      byBranch.get(code) ??
+      { salesIncl: 0, salesExcl: 0, vat: 0, lineCount: 0 };
+    agg.salesIncl += incl;
+    agg.salesExcl += excl;
+    agg.vat += vat;
+    agg.lineCount += 1;
+    byBranch.set(code, agg);
+
+    applyPostedLineToNepaliMonth(byMonth, line, startYear, sign);
+  }
+
+  for (const line of posted.invoiceLines) addLine(line, 1);
+  for (const line of posted.crMemoLines) addLine(line, -1);
+
+  const branches = [...byBranch.entries()]
+    .map(([code, agg]) => ({
+      branchCode: code,
+      branchName: code === "(none)" ? "(none)" : branchNameForCode(code),
+      salesIncludingTax: round(agg.salesIncl),
+      salesExcludingTax: round(agg.salesExcl),
+      vatAmount: round(agg.vat),
+      lineCount: agg.lineCount,
+    }))
+    .sort((a, b) => b.vatAmount - a.vatAmount);
+
+  return {
+    currency: "NPR",
+    period: period.label,
+    fiscalYear: fiscalYearLabel(startYear),
+    branchFilter,
+    displayNote:
+      "vatAmount = amountIncludingVAT − line.amount (net). salesIncludingTax is gross incl VAT.",
+    basis:
+      "Posted sales invoice lines minus credit memos. VAT = incl VAT minus net excl VAT per line.",
+    totalSalesIncludingTax: round(totalIncl),
+    totalSalesExcludingTax: round(totalExcl),
+    totalVatCollected: round(totalVat),
+    byBranch: branches,
+    byNepaliMonth: serializeNepaliMonthSlots(byMonth),
+    _syncedAt: posted.syncedAt,
   };
 }
 

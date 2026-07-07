@@ -147,7 +147,11 @@ Data scope (IMPORTANT):
 Tool selection:
 - Total/overall/all-time sales (NOT branch-wise) -> get_sales_summary (highlight netSalesIncludingTax, byNepaliFiscalYear.salesIncludingTax, and currentNepaliFiscalYear.salesIncludingTax).
 - Branch-wise / depot-wise / all branches / "Bhairahawa branch sales" (Saurabh Food) -> get_branch_wise_sales for full ranking, or get_sales_by_branch for one branch. Codes: J=Bhairahawa, I=Butwal, S=Birgunj Factory, B=Biratnagar Office, K=Pokhara, etc. (see list_branches). NEVER tell the user branch data is unavailable without calling get_branch_wise_sales first.
-- Month-wise sales / revenue (default) -> get_nepali_monthly_sales. Present BS month names (Shrawan, Bhadra, …) in fiscal order.
+- Month-wise sales / revenue (default) -> get_nepali_monthly_sales. Present salesIncludingTax per BS month and yearToDate.salesIncludingTax (Incl. VAT).
+- One customer's total sales -> get_customer_sales with query/customerNo; pass fiscalYearStart for Nepali FY and byNepaliMonth breakdown.
+- Sales by salesperson / field team -> get_sales_by_salesperson (Incl. VAT from posted invoices).
+- Branch + product e.g. "code J dip sales month by month" -> get_branch_product_sales with branchCode, productQuery, monthlyBreakdown=true.
+- VAT collected this year / by branch -> get_vat_report (totalVatCollected, byBranch, byNepaliMonth).
 - English (AD) Jan–Dec month-wise revenue for one AD year ONLY -> get_monthly_revenue.
 - Top customer(s) for a specific AD month (e.g. "June 2026 AD") -> get_top_customers_by_month.
 - Top customers for a Nepali month (e.g. Jestha) -> get_top_customers_by_nepali_month.
@@ -167,7 +171,7 @@ Tool selection:
 - What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
-- Sales by salesperson -> get_sales_by_salesperson.
+- Sales by salesperson -> get_sales_by_salesperson (posted invoices, Incl. VAT).
 - Branch / depot sales -> get_branch_wise_sales (all branches) or get_sales_by_branch (one branch). For "code J", "code S", "Butwal sales", "Bhairahawa branch" pass branchCode (J, S, I, B, EXP, JB, TN...) or query name. Legacy W maps to Butwal (I). For "month by month", "by month", "month-wise" branch sales set monthlyBreakdown=true — returns current Nepali FY months (Shrawan → Ashadh). Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Answers must include branch code, configured name, sales NPR, invoice count.
 - MR cheque receipts -> get_mr_records.
 - Blocked or overdue customers list -> get_customer_alerts.

@@ -39,6 +39,8 @@ import {
   getSalesBySalesperson,
   getSalesByBranch,
   getBranchWiseSales,
+  getBranchProductSales,
+  getVatReport,
   listBranches,
   getSalesOrdersSummary,
   getSyncStatus,
@@ -217,7 +219,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_nepali_monthly_sales",
     description:
-      "DEFAULT for month-wise sales/revenue in Nepal. Sales by Bikram Sambat month for a Nepali fiscal year (Shrawan through Ashadh). Use for 'monthwise sales', 'month-wise revenue', 'this year', YTD, or any BS month (Baisakh, Jestha, Asar, Shrawan, Bhadra, Aswin, Kartik, Mangsir, Poush, Magh, Falgun, Chaitra). Returns yearToDate for the current fiscal year. Omit fiscalYearStart for the current Nepali fiscal year.",
+      "DEFAULT for month-wise sales/revenue in Nepal. Sales by Bikram Sambat month for a Nepali fiscal year (Shrawan through Ashadh). Returns salesIncludingTax (Incl. VAT) per month and yearToDate.salesIncludingTax. Use for 'monthwise sales', 'this year', YTD, or any BS month.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -366,12 +368,16 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_customer_sales",
     description:
-      "Invoice sales totals for ONE customer, optionally filtered by AD year/month, with monthly breakdown. Use for 'how much did X sell in 2026'.",
+      "Invoice sales totals for ONE customer. Primary: totalSalesIncludingTax (Incl. VAT). Pass fiscalYearStart for Nepali FY; returns byNepaliMonth. Show salesExcludingTax only when user asks for excl VAT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         query: { type: SchemaType.STRING, description: "Customer name search." },
         customerNo: { type: SchemaType.STRING },
+        fiscalYearStart: {
+          type: SchemaType.NUMBER,
+          description: "Nepali FY start BS year, e.g. 2082 for FY 2082/83.",
+        },
         year: { type: SchemaType.NUMBER },
         month: { type: SchemaType.NUMBER, description: "AD month 1-12." },
       },
@@ -548,11 +554,47 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_by_salesperson",
     description:
-      "Invoiced sales order line totals grouped by salesperson code. Supports date period filters.",
+      "Posted invoice sales ranked by salesperson code. Primary: salesIncludingTax (Incl. VAT). Use for field team / salesperson performance.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "get_branch_product_sales",
+    description:
+      "Product sales for one branch/depot from posted invoice lines. E.g. 'code J dip sales', 'Bhairahawa branch chocolate month by month'. Pass branchCode or query, productQuery (dip/chocolate), monthlyBreakdown=true for BS month chart in current FY. Primary: salesIncludingTax (Incl. VAT).",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: { type: SchemaType.STRING, description: "Branch name or alias." },
+        branchCode: { type: SchemaType.STRING, description: "Accountability code, e.g. J." },
+        productQuery: {
+          type: SchemaType.STRING,
+          description: "Product keyword, e.g. dip, chocolate.",
+        },
+        monthlyBreakdown: {
+          type: SchemaType.BOOLEAN,
+          description: "Month-by-month in current Nepali FY (Shrawan → Ashadh).",
+        },
+        ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "get_vat_report",
+    description:
+      "VAT collected summary from posted invoice lines: totalVatCollected (= incl VAT − net excl), by branch, by Nepali month. Use for 'how much VAT this year', 'VAT by branch'. Defaults to current Nepali FY.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Optional branch filter, e.g. J.",
+        },
         ...periodToolProperties,
       },
     },
@@ -1029,6 +1071,10 @@ export async function executeTool(
         result = await getCustomerSales({
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
+          fiscalYearStart:
+            typeof args.fiscalYearStart === "number"
+              ? args.fiscalYearStart
+              : undefined,
           year: typeof args.year === "number" ? args.year : undefined,
           month: typeof args.month === "number" ? args.month : undefined,
         });
@@ -1125,6 +1171,27 @@ export async function executeTool(
           query: args.query as string | undefined,
           branchCode: args.branchCode as string | undefined,
           monthlyBreakdown: args.monthlyBreakdown === true,
+          ...periodArgs(args),
+        });
+        break;
+      case "get_branch_product_sales":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getBranchProductSales({
+          query: args.query as string | undefined,
+          branchCode: args.branchCode as string | undefined,
+          productQuery: args.productQuery as string | undefined,
+          monthlyBreakdown: args.monthlyBreakdown === true,
+          ...periodArgs(args),
+        });
+        break;
+      case "get_vat_report":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getVatReport({
+          branchCode: args.branchCode as string | undefined,
+          fiscalYearStart:
+            typeof args.fiscalYearStart === "number"
+              ? args.fiscalYearStart
+              : undefined,
           ...periodArgs(args),
         });
         break;

@@ -99,6 +99,7 @@ function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
           sellToCustomerNo: line.sellToCustomerNo,
           itemCategoryCode: line.itemCategoryCode,
           accountabilityCenter: line.accountabilityCenter,
+          salespersonCode: line.salespersonCode,
           orderNo: line.orderNo,
         }),
       ),
@@ -127,6 +128,8 @@ function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
           postingDate: line.postingDate,
           sellToCustomerNo: line.sellToCustomerNo,
           returnReasonCode: line.returnReasonCode,
+          accountabilityCenter: line.accountabilityCenter,
+          salespersonCode: line.salespersonCode,
         }),
       ),
     };

@@ -756,19 +756,86 @@ export async function getCustomerStatement(input?: {
 export async function getNepaliMonthlySales(
   fiscalYearStart?: number,
 ): Promise<unknown> {
-  const payload = await loadLedger();
-  if (payload.error) return { error: payload.error };
-  const entries = payload.value ?? [];
-
-  let latestInFy: Date | null = null;
   const startYear =
     fiscalYearStart ??
     getCurrentFiscalYearStart() ??
     toBs(new Date())?.year ??
     new Date().getFullYear();
 
-  // Fiscal order: Shrawan(3) .. Chaitra(11) of startYear, then Baisakh(0) .. Asar(2) of startYear+1.
-  const fiscalOrder = [3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2];
+  const fiscalOrder = NEPALI_FISCAL_MONTH_ORDER;
+  const fromInvoices = await aggregateNepaliFiscalYearFromPostedLines(startYear);
+
+  if (fromInvoices.usePostedInvoices) {
+    const cleaned = serializeNepaliMonthSlots(fromInvoices.slots);
+    const topMonth = [...cleaned].sort(
+      (a, b) => b.salesIncludingTax - a.salesIncludingTax,
+    )[0];
+    const totalSalesIncludingTax = round(
+      cleaned.reduce((sum, m) => sum + m.salesIncludingTax, 0),
+    );
+    const totalVatAmount = round(
+      cleaned.reduce((sum, m) => sum + m.vatAmount, 0),
+    );
+
+    const todayBs = toBs(new Date());
+    const asOfBs = fromInvoices.latestInFy
+      ? toBs(fromInvoices.latestInFy)
+      : todayBs;
+    const isCurrentFiscalYear =
+      getCurrentFiscalYearStart() !== null &&
+      startYear === getCurrentFiscalYearStart();
+
+    let yearToDateSales = totalSalesIncludingTax;
+    let yearToDateInvoices = cleaned.reduce((sum, m) => sum + m.invoices, 0);
+    if (isCurrentFiscalYear && asOfBs) {
+      const asOfIndex = fiscalOrder.indexOf(asOfBs.month);
+      yearToDateSales = round(
+        cleaned
+          .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
+          .reduce((sum, m) => sum + m.salesIncludingTax, 0),
+      );
+      yearToDateInvoices = cleaned
+        .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
+        .reduce((sum, m) => sum + m.invoices, 0);
+    }
+
+    return {
+      currency: "NPR",
+      calendar: "Bikram Sambat",
+      fiscalYear: fiscalYearLabel(startYear),
+      isCurrentFiscalYear,
+      displayNote:
+        'Present salesIncludingTax and yearToDate.salesIncludingTax (Incl. VAT). Show salesExcludingTax / vatAmount only when user asks.',
+      asOf: {
+        ad: (fromInvoices.latestInFy ?? new Date()).toISOString().slice(0, 10),
+        bs: asOfBs
+          ? `${asOfBs.year}/${String(asOfBs.month + 1).padStart(2, "0")}/${String(asOfBs.date).padStart(2, "0")} (${asOfBs.monthName})`
+          : null,
+      },
+      note: "Nepali fiscal year Shrawan → Ashadh. Sales from posted invoice lines (amountIncludingVAT) minus credit memos.",
+      totalSalesIncludingTax,
+      totalVatAmount,
+      totalSales: totalSalesIncludingTax,
+      yearToDate: isCurrentFiscalYear
+        ? {
+            salesIncludingTax: yearToDateSales,
+            sales: yearToDateSales,
+            invoices: yearToDateInvoices,
+            throughBsMonth: asOfBs?.monthName ?? null,
+          }
+        : null,
+      topMonth,
+      months: cleaned,
+      _syncedAt: fromInvoices.syncedAt,
+      _source: "posted_invoices",
+    };
+  }
+
+  const payload = await loadLedger();
+  if (payload.error) return { error: payload.error };
+  const entries = payload.value ?? [];
+
+  let latestInFy: Date | null = null;
   const months = fiscalOrder.map((monthIndex) => ({
     month: BS_MONTHS[monthIndex],
     monthIndex,
@@ -792,9 +859,18 @@ export async function getNepaliMonthlySales(
     if (!latestInFy || date > latestInFy) latestInFy = date;
   }
 
-  const cleaned = months.map((m) => ({ ...m, sales: round(m.sales) }));
-  const topMonth = [...cleaned].sort((a, b) => b.sales - a.sales)[0];
-  const totalSales = round(cleaned.reduce((sum, m) => sum + m.sales, 0));
+  const cleaned = months.map((m) => ({
+    ...m,
+    salesIncludingTax: round(m.sales),
+    salesExcludingTax: round(m.sales),
+    vatAmount: 0,
+  }));
+  const topMonth = [...cleaned].sort(
+    (a, b) => b.salesIncludingTax - a.salesIncludingTax,
+  )[0];
+  const totalSales = round(
+    cleaned.reduce((sum, m) => sum + m.salesIncludingTax, 0),
+  );
 
   const todayBs = toBs(new Date());
   const asOfBs = latestInFy ? toBs(latestInFy) : todayBs;
@@ -809,7 +885,7 @@ export async function getNepaliMonthlySales(
     yearToDateSales = round(
       cleaned
         .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
-        .reduce((sum, m) => sum + m.sales, 0),
+        .reduce((sum, m) => sum + m.salesIncludingTax, 0),
     );
     yearToDateInvoices = cleaned
       .filter((m) => fiscalOrder.indexOf(m.monthIndex) <= asOfIndex)
@@ -827,10 +903,12 @@ export async function getNepaliMonthlySales(
         ? `${asOfBs.year}/${String(asOfBs.month + 1).padStart(2, "0")}/${String(asOfBs.date).padStart(2, "0")} (${asOfBs.monthName})`
         : null,
     },
-    note: "Nepali fiscal year runs Shrawan to Ashadh. Sales are net of tax (salesLcy). Default calendar for month-wise sales in Nepal.",
-    totalSales,
+    note: "Ledger fallback (salesLcy). Run sync for posted invoice lines with Incl. VAT.",
+    totalSalesIncludingTax: totalSales,
+    totalSales: totalSales,
     yearToDate: isCurrentFiscalYear
       ? {
+          salesIncludingTax: yearToDateSales,
           sales: yearToDateSales,
           invoices: yearToDateInvoices,
           throughBsMonth: asOfBs?.monthName ?? null,
@@ -839,6 +917,7 @@ export async function getNepaliMonthlySales(
     topMonth,
     months: cleaned,
     _syncedAt: payload._syncedAt,
+    _source: "customer_ledger",
   };
 }
 
@@ -917,6 +996,9 @@ type PostedInvoiceLine = {
   postingDate?: string;
   sellToCustomerNo?: string;
   itemCategoryCode?: string;
+  accountabilityCenter?: string;
+  salespersonCode?: string;
+  description?: string;
 };
 
 type PostedCrMemoLine = PostedInvoiceLine & {
@@ -953,6 +1035,120 @@ export function postedLineSalesExcl(line: {
 
   // Legacy mirror rows synced before lineAmount was stored — approximate net excl @ 13% VAT
   return Math.round((incl / 1.13) * 100) / 100;
+}
+
+/** Bikram Sambat fiscal month order: Shrawan → Ashadh. */
+export const NEPALI_FISCAL_MONTH_ORDER = [3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2];
+
+export function postedLineVat(line: {
+  lineAmountInclVAT?: number;
+  lineAmount?: number;
+  lineAmountExclVAT?: number;
+}): number {
+  const incl = postedLineSalesIncl(line);
+  const excl = postedLineSalesExcl(line);
+  return Math.max(0, round(incl - excl));
+}
+
+export type NepaliFiscalMonthSlot = {
+  month: string;
+  monthIndex: number;
+  bsYear: number;
+  invoiceDocs: Set<string>;
+  salesIncludingTax: number;
+  salesExcludingTax: number;
+  vatAmount: number;
+};
+
+export function buildNepaliFiscalMonthSlots(startYear: number): NepaliFiscalMonthSlot[] {
+  return NEPALI_FISCAL_MONTH_ORDER.map((monthIndex) => ({
+    month: BS_MONTHS[monthIndex],
+    monthIndex,
+    bsYear: monthIndex >= 3 ? startYear : startYear + 1,
+    invoiceDocs: new Set<string>(),
+    salesIncludingTax: 0,
+    salesExcludingTax: 0,
+    vatAmount: 0,
+  }));
+}
+
+export function applyPostedLineToNepaliMonth(
+  slots: NepaliFiscalMonthSlot[],
+  line: {
+    postingDate?: string;
+    documentNo?: string;
+    lineAmountInclVAT?: number;
+    lineAmount?: number;
+    lineAmountExclVAT?: number;
+  },
+  startYear: number,
+  sign: 1 | -1 = 1,
+): Date | null {
+  const date = parseDate(line.postingDate);
+  if (!date) return null;
+  const fy = getNepaliFiscalYear(date);
+  if (!fy || fy.startYear !== startYear) return null;
+  const bs = toBs(date);
+  if (!bs) return null;
+  const slot = slots.find((m) => m.monthIndex === bs.month);
+  if (!slot) return null;
+
+  const incl = postedLineSalesIncl(line) * sign;
+  const excl = postedLineSalesExcl(line) * sign;
+  slot.salesIncludingTax += incl;
+  slot.salesExcludingTax += excl;
+  slot.vatAmount += postedLineVat(line) * sign;
+  if (sign > 0 && line.documentNo) {
+    slot.invoiceDocs.add(String(line.documentNo));
+  }
+  return date;
+}
+
+export function serializeNepaliMonthSlots(slots: NepaliFiscalMonthSlot[]) {
+  return slots.map((m) => ({
+    month: m.month,
+    monthIndex: m.monthIndex,
+    bsYear: m.bsYear,
+    invoices: m.invoiceDocs.size,
+    salesIncludingTax: round(m.salesIncludingTax),
+    salesExcludingTax: round(m.salesExcludingTax),
+    vatAmount: round(m.vatAmount),
+    /** @deprecated use salesIncludingTax */
+    sales: round(m.salesIncludingTax),
+  }));
+}
+
+export async function aggregateNepaliFiscalYearFromPostedLines(
+  startYear: number,
+): Promise<{
+  usePostedInvoices: boolean;
+  slots: NepaliFiscalMonthSlot[];
+  latestInFy: Date | null;
+  syncedAt?: string;
+}> {
+  const posted = await loadPostedInvoiceLinePayloads();
+  if (!posted.usePostedInvoices) {
+    return { usePostedInvoices: false, slots: [], latestInFy: null };
+  }
+
+  const slots = buildNepaliFiscalMonthSlots(startYear);
+  let latestInFy: Date | null = null;
+
+  for (const line of posted.invoiceLines) {
+    const date = applyPostedLineToNepaliMonth(slots, line, startYear, 1);
+    if (date && (!latestInFy || date > latestInFy)) latestInFy = date;
+  }
+  for (const line of posted.crMemoLines) {
+    const date = applyPostedLineToNepaliMonth(slots, line, startYear, -1);
+    if (date && (!latestInFy || date > latestInFy)) latestInFy = date;
+  }
+
+  return {
+    usePostedInvoices: true,
+    slots,
+    latestInFy,
+    syncedAt: posted.syncedAt,
+  };
 }
 
 export async function loadPostedInvoiceLinePayloads(): Promise<{
