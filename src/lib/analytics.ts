@@ -328,7 +328,58 @@ export type ReceivablesAgingInput = {
   minDays?: number;
   /** Default due_date for overdue questions; posting_date for "X days since invoice". */
   ageBy?: ReceivablesAgeBy;
+  /** Customer name search — partial match OK (e.g. "Bhatbhateni Super Market"). */
+  query?: string;
+  customerNo?: string;
 };
+
+async function resolveCustomerForFilter(input?: {
+  query?: string;
+  customerNo?: string;
+}): Promise<
+  | { customerNo: string; name: string }
+  | { error: string; candidates?: unknown }
+  | null
+> {
+  if (!input?.customerNo?.trim() && !input?.query?.trim()) return null;
+
+  const customersPayload = await loadCustomersPayload();
+  if (customersPayload.error) return { error: customersPayload.error };
+
+  if (input.customerNo?.trim()) {
+    const customer = (customersPayload.value ?? []).find(
+      (c) => c.number === input.customerNo?.trim(),
+    );
+    if (!customer?.number) {
+      return { error: `Customer number ${input.customerNo} not found.` };
+    }
+    return { customerNo: customer.number, name: customer.displayName ?? "" };
+  }
+
+  const search = (await searchCustomers(input.query!.trim())) as {
+    customers?: Array<{
+      customerNo?: string;
+      name?: string;
+      matchScore?: number;
+    }>;
+  };
+  const top = search.customers ?? [];
+  if (top.length === 0) {
+    return {
+      error: `No customer found matching "${input.query}". Try a shorter name or customer number.`,
+    };
+  }
+  if (top.length > 1 && top[0].matchScore === top[1].matchScore) {
+    return {
+      error: "Multiple customers matched. Please specify customer number.",
+      candidates: top.slice(0, 5),
+    };
+  }
+  return {
+    customerNo: top[0].customerNo ?? "",
+    name: top[0].name ?? "",
+  };
+}
 
 export async function getReceivablesAging(
   input?: number | ReceivablesAgingInput,
@@ -337,6 +388,12 @@ export async function getReceivablesAging(
     typeof input === "number" ? { minDays: input } : (input ?? {});
   const minDays = options.minDays;
   const ageBy = options.ageBy ?? "due_date";
+
+  const customerFilter = await resolveCustomerForFilter({
+    query: options.query,
+    customerNo: options.customerNo,
+  });
+  if (customerFilter && "error" in customerFilter) return customerFilter;
 
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
@@ -350,6 +407,9 @@ export async function getReceivablesAging(
       customerNames.set(customer.number, customer.displayName ?? "");
     }
   }
+
+  const filterCustomerNo = customerFilter?.customerNo ?? null;
+  const filterCustomerName = customerFilter?.name ?? null;
 
   const now = new Date();
   const bucketDefs =
@@ -394,6 +454,9 @@ export async function getReceivablesAging(
     if (remaining <= 0) continue;
     if (entry.documentType !== "Invoice") continue;
 
+    const customerNo = entry.customerNo ?? entry.sellToCustomerNo ?? "";
+    if (filterCustomerNo && customerNo !== filterCustomerNo) continue;
+
     const postingDate = parseDate(entry.postingDate);
     const dueDate = parseDate(entry.dueDate);
 
@@ -429,7 +492,6 @@ export async function getReceivablesAging(
       buckets[bucketIndex].amount += remaining;
     }
 
-    const customerNo = entry.customerNo ?? entry.sellToCustomerNo ?? "";
     const name = customerNames.get(customerNo) ?? "";
     const matchesMinDays = !minDays || daysAged >= minDays;
 
@@ -517,6 +579,14 @@ export async function getReceivablesAging(
       ageBy === "posting_date"
         ? "Open customer ledger invoices aged by posting date (days since invoice). Includes balances not yet past payment due date."
         : "Open customer ledger invoice entries aged by payment due date (days overdue).",
+    ...(filterCustomerNo
+      ? {
+          customer: {
+            customerNo: filterCustomerNo,
+            name: filterCustomerName ?? customerNames.get(filterCustomerNo) ?? "",
+          },
+        }
+      : {}),
     totalOutstanding,
     totalOverdue,
     totalNotYetDue,
@@ -525,8 +595,12 @@ export async function getReceivablesAging(
     matchingOverdueTotal: matchingTotal,
     matchingInvoiceCount,
     overdueEntries: overdueEntries.slice(0, 50),
-    topOverdueCustomers,
-    topCustomersByBalance,
+    topOverdueCustomers: filterCustomerNo
+      ? topOverdueCustomers.filter((c) => c.customerNo === filterCustomerNo)
+      : topOverdueCustomers,
+    topCustomersByBalance: filterCustomerNo
+      ? topCustomersByBalance.filter((c) => c.customerNo === filterCustomerNo)
+      : topCustomersByBalance,
     _syncedAt: ledgerPayload._syncedAt,
   };
 }
@@ -544,6 +618,7 @@ export async function searchCustomers(query: string): Promise<unknown> {
 
   const term = normalizeSearchText(query);
   if (!term) return { error: "Search query required." };
+  const termTokens = term.split(" ").filter((token) => token.length >= 2);
 
   const matches = (payload.value ?? [])
     .map((customer) => {
@@ -552,11 +627,17 @@ export async function searchCustomers(query: string): Promise<unknown> {
         customer.displayName ?? "",
         customer.phoneNumber ?? "",
       ];
+      const nameNorm = normalizeSearchText(customer.displayName ?? "");
       const normalized = normalizeSearchText(fields.join(" "));
       let score = 0;
-      if (normalizeSearchText(customer.displayName ?? "") === term) score = 100;
+      if (nameNorm === term) score = 100;
       else if (normalizeSearchText(customer.number ?? "") === term) score = 95;
-      else if (normalized.startsWith(term)) score = 80;
+      else if (
+        termTokens.length >= 2 &&
+        termTokens.every((token) => nameNorm.includes(token))
+      )
+        score = 88;
+      else if (nameNorm.startsWith(term)) score = 80;
       else if (fields.some((field) => normalizeSearchText(field).includes(term)))
         score = 60;
       else if (normalized.includes(term)) score = 40;

@@ -234,10 +234,16 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_receivables_aging",
     description:
-      "Aging for open invoice balances. Default ageBy=due_date for overdue/past-due questions. Use ageBy=posting_date for 'outstanding above X days' / 'X days since invoice' (days since posting date). Due-date buckets: Not due, 1-30, 31-60, 61-90, Over 90 days overdue. NOT for who owes the most total (use get_outstanding_receivables).",
+      "Aging for open invoice balances. Default ageBy=due_date for overdue/past-due questions. Use ageBy=posting_date for 'outstanding above X days' / 'X days since invoice'. Pass query (customer name — partial match OK, e.g. 'Bhatbhateni Super Market') when user names one customer. Due-date buckets: Not due, 1-30, 31-60, 61-90, Over 90 days overdue. NOT for who owes the most total (use get_outstanding_receivables).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
+        query: {
+          type: SchemaType.STRING,
+          description:
+            "Customer name search when user asks about one party. Partial match OK — do not require exact BC legal name.",
+        },
+        customerNo: { type: SchemaType.STRING },
         minDaysOverdue: {
           type: SchemaType.NUMBER,
           description:
@@ -998,6 +1004,8 @@ export async function executeTool(
             args.ageBy === "posting_date" || args.ageBy === "due_date"
               ? args.ageBy
               : undefined,
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
         });
         break;
       case "get_outstanding_receivables":

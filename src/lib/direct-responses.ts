@@ -92,11 +92,36 @@ function isReceivablesQuery(message: string): boolean {
 
 function parseMinDaysOverdue(message: string): number | undefined {
   const explicit = message.match(
-    /\b(?:above|over|more than|>=?)\s*(\d+)\s*days?\b/,
+    /\b(?:above|over|more than|>=?)\s*(\d+)\s*days?\b/i,
   );
   if (explicit) return Number(explicit[1]);
-  if (/\b90\b/.test(message) && /\b(day|days)\b/.test(message)) return 90;
+  if (/\b90\b/.test(message) && /\b(day|days)\b/i.test(message)) return 90;
   return undefined;
+}
+
+/** Pull a customer name fragment from receivables questions (partial names OK). */
+function extractCustomerQueryFromReceivablesMessage(
+  message: string,
+): string | null {
+  let text = message
+    .replace(
+      /\b(pending amount|outstanding amount|open balance|total outstanding)\b/gi,
+      " ",
+    )
+    .replace(
+      /\b(receivable|receivables|overdue|aging|past due|payment pending|dues)\b/gi,
+      " ",
+    )
+    .replace(/\b(above|over|more than|>=?)\s*\d+\s*days?\b/gi, " ")
+    .replace(/\b\d+\s*days?\s+(overdue|pending|due|old)\b/gi, " ")
+    .replace(/\b(of|for|from)\b/gi, " ")
+    .replace(/\b(amount|balance|total|pending)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text || text.length < 3) return null;
+  if (/^(all|every|total|company|customers?)$/i.test(text)) return null;
+  return text;
 }
 
 function resolveReceivablesAgeBy(message: string): "due_date" | "posting_date" {
@@ -116,8 +141,15 @@ async function formatReceivablesResponse(
 ): Promise<string> {
   const minDays = parseMinDaysOverdue(normalized);
   const ageBy = resolveReceivablesAgeBy(normalized);
-  const data = (await getReceivablesAging({ minDays, ageBy })) as {
+  const customerQuery = extractCustomerQueryFromReceivablesMessage(message);
+  const data = (await getReceivablesAging({
+    minDays,
+    ageBy,
+    ...(customerQuery ? { query: customerQuery } : {}),
+  })) as {
     error?: string;
+    candidates?: Array<{ customerNo?: string; name?: string }>;
+    customer?: { customerNo: string; name: string };
     asOf?: string;
     ageBy?: "due_date" | "posting_date";
     basis?: string;
@@ -140,9 +172,25 @@ async function formatReceivablesResponse(
     _syncedAt?: string;
   };
 
-  if (data.error) return data.error;
+  if (data.error) {
+    if (data.candidates?.length) {
+      return [
+        data.error,
+        "",
+        "| Customer No. | Name |",
+        "|---|---|",
+        ...data.candidates.map(
+          (c) => `| ${c.customerNo ?? ""} | ${escapeCell(c.name ?? "")} |`,
+        ),
+      ].join("\n");
+    }
+    return data.error;
+  }
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
+  const customerLabel = data.customer?.name
+    ? ` — ${data.customer.name}`
+    : "";
   const ageLabel =
     ageBy === "posting_date"
       ? "invoice age (days since posting)"
@@ -151,7 +199,7 @@ async function formatReceivablesResponse(
   if (minDays) {
     const entryCount = data.matchingInvoiceCount ?? data.overdueEntries?.length ?? 0;
     const lines = [
-      `**Outstanding above ${minDays} days** — ${companyLabel}${formatSync(data._syncedAt)}`,
+      `**Outstanding above ${minDays} days${customerLabel}** — ${companyLabel}${formatSync(data._syncedAt)}`,
       "",
       `| Metric | Amount (NPR) | Invoices |`,
       `|---|---:|---:|`,
@@ -166,6 +214,10 @@ async function formatReceivablesResponse(
         (await getReceivablesAging({
           minDays,
           ageBy: "due_date",
+          ...(customerQuery ? { query: customerQuery } : {}),
+          ...(data.customer?.customerNo
+            ? { customerNo: data.customer.customerNo }
+            : {}),
         })) as { matchingOverdueTotal?: number }
       ).matchingOverdueTotal;
       lines.push(
@@ -197,7 +249,7 @@ async function formatReceivablesResponse(
   }
 
   const lines = [
-    `**Outstanding receivables** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    `**Outstanding receivables${customerLabel}** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `| Metric | Amount (NPR) |`,
     `|---|---:|`,

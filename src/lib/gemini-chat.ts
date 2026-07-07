@@ -161,8 +161,8 @@ Tool selection:
 - Compare two months or years -> compare_revenue_periods.
 - Payments/collections/credit memos in a period -> get_payments_summary.
 - Total outstanding / who owes the most / receivable by party / outstanding payment ranking -> get_outstanding_receivables. Present each customer with balance (total owed), overdueAmount (past due), and notYetDueAmount (still within payment terms). Matches ERP/Power BI balance report.
-- Overdue-only / aging buckets / "X days payment pending" / past-due analysis -> get_receivables_aging with ageBy=due_date (pass minDaysOverdue when user specifies days). Do NOT use this alone when user asks who owes the most total — rank by balance via get_outstanding_receivables.
-- "Outstanding above X days" / "X days since invoice" / "90 days old receivables" -> get_receivables_aging with ageBy=posting_date and minDaysOverdue=X (days since invoice posting date, not payment due date).
+- Overdue-only / aging buckets / "X days payment pending" / past-due analysis -> get_receivables_aging with ageBy=due_date (pass minDaysOverdue when user specifies days). Pass query when user names ONE customer — partial name OK (e.g. "Bhatbhateni Super Market"). Do NOT use this alone when user asks who owes the most total — rank by balance via get_outstanding_receivables.
+- "Outstanding above X days" / "X days since invoice" / "90 days old receivables" -> get_receivables_aging with ageBy=posting_date, minDaysOverdue=X, and query when a customer is named.
 - Find a customer by name -> search_customers. NEVER say customer not found without calling search_customers first.
 - How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
 - Search specific ledger rows (invoice no, type) -> search_ledger_entries. Do NOT dump get_customer_ledger_entries.
