@@ -923,21 +923,36 @@ type PostedCrMemoLine = PostedInvoiceLine & {
   returnReasonCode?: string;
 };
 
+/** Posted line amount incl. VAT (amountIncludingVAT). */
 export function postedLineSalesIncl(line: {
   lineAmountInclVAT?: number;
-  lineAmountExclVAT?: number;
   lineAmount?: number;
 }): number {
-  return Number(
-    line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? line.lineAmount ?? 0,
-  );
+  const incl = Number(line.lineAmountInclVAT ?? 0);
+  if (incl !== 0) return incl;
+  return Number(line.lineAmount ?? 0);
 }
 
+/** Posted net revenue excl. VAT (BC line.amount — after discount, matches ledger). */
 export function postedLineSalesExcl(line: {
-  lineAmountExclVAT?: number;
   lineAmount?: number;
+  lineAmountInclVAT?: number;
+  lineAmountExclVAT?: number;
 }): number {
-  return Number(line.lineAmountExclVAT ?? line.lineAmount ?? 0);
+  const amount = Number(line.lineAmount ?? 0);
+  if (amount !== 0) return amount;
+
+  const incl = Number(line.lineAmountInclVAT ?? 0);
+  if (incl === 0) return 0;
+
+  const listExcl = Number(line.lineAmountExclVAT ?? 0);
+  // Zero-VAT lines: amountIncludingVAT ≈ list lineAmountExclVAT
+  if (listExcl > 0 && Math.abs(incl - listExcl) / listExcl < 0.02) {
+    return incl;
+  }
+
+  // Legacy mirror rows synced before lineAmount was stored — approximate net excl @ 13% VAT
+  return Math.round((incl / 1.13) * 100) / 100;
 }
 
 export async function loadPostedInvoiceLinePayloads(): Promise<{
@@ -1109,10 +1124,8 @@ export async function getProductSales(
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
 
-      const salesExcl = Number(line.lineAmountExclVAT ?? 0);
-      const salesIncl = Number(
-        line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? 0,
-      );
+      const salesIncl = postedLineSalesIncl(line);
+      const salesExcl = postedLineSalesExcl(line);
 
       addLine({
         itemNo,
@@ -1130,16 +1143,14 @@ export async function getProductSales(
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
 
-      const salesExcl = Number(line.lineAmountExclVAT ?? 0);
-      const salesIncl = Number(
-        line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? 0,
-      );
+      const salesIncl = -Math.abs(postedLineSalesIncl(line));
+      const salesExcl = -Math.abs(postedLineSalesExcl(line));
 
       addLine({
         itemNo,
         quantity: -quantity,
-        salesExcl: -salesExcl,
-        salesIncl: -salesIncl,
+        salesExcl,
+        salesIncl,
         postingDate: String(line.postingDate ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
       });
@@ -1190,9 +1201,9 @@ export async function getProductSales(
     period: period.label,
     itemNumbers: explicitItems.length ? explicitItems : null,
     displayNote:
-      "Present totalSalesIncludingTax and salesIncludingTax as the primary amounts (Incl. VAT).",
+      'Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax / totalSalesExcludingTax ONLY when the user explicitly asks for excl VAT or net amount — that field is BC line.amount (net revenue after discount), NOT lineAmountExclVAT (list price).',
     basis: usePostedInvoices
-      ? "Posted sales invoice lines (lineAmountInclVAT / amountIncludingVAT, lineAmountExclVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
+      ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount. Never use lineAmountExclVAT (pre-discount list price)."
       : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. VAT-inclusive amount not available on this fallback.",
     dataCoverage: {
       from: earliest,

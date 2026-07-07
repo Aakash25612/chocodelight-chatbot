@@ -1080,9 +1080,9 @@ export async function getCategorySales(
     currency: "NPR",
     period: period.label,
     displayNote:
-      "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
+      'Show totalSalesIncludingTax and salesIncludingTax only (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT (BC line.amount net after discount).',
     basis: posted.usePostedInvoices
-      ? "Posted sales invoice lines (amountIncludingVAT) minus credit memo lines."
+      ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount."
       : "Sales order lines (quantityInvoiced × unitPrice). Partial history from ~Jul 2024.",
     totalSalesIncludingTax: round(totalIncl),
     totalSalesExcludingTax: round(totalExcl),
@@ -1448,9 +1448,9 @@ export async function getCustomerProductSales(
     period: period.label,
     productQuery: productTerm || null,
     displayNote:
-      "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
+      'Show totalSalesIncludingTax and salesIncludingTax only (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT (BC line.amount net after discount).',
     basis: posted.usePostedInvoices
-      ? "Posted sales invoice lines (amountIncludingVAT) minus credit memo lines for this customer."
+      ? "Posted sales invoice lines for this customer: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount."
       : "Customer sales order lines in the filtered posting-date window (quantityInvoiced × unitPrice).",
     orderCount,
     totalSalesIncludingTax: round(totalIncl),

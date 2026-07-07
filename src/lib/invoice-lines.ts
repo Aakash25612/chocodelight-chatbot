@@ -220,16 +220,13 @@ export function flattenSalesInvoiceLines(
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         unitPrice: Number(line.unitPrice ?? 0),
         lineAmount: Number(
-          line.amount ??
-            line.lineAmountExclVAT ??
-            quantity * Number(line.unitPrice ?? 0),
+          line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),
         lineAmountInclVAT: Number(
           line.amountIncludingVAT ??
-            line.lineAmountExclVAT ??
             line.amount ??
             quantity * Number(line.unitPrice ?? 0),
         ),
@@ -268,16 +265,13 @@ export function flattenSalesCrMemoLines(headers: CrMemoHeader[]): FlatCrMemoLine
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         unitPrice: Number(line.unitPrice ?? 0),
         lineAmount: Number(
-          line.amount ??
-            line.lineAmountExclVAT ??
-            quantity * Number(line.unitPrice ?? 0),
+          line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),
         lineAmountInclVAT: Number(
           line.amountIncludingVAT ??
-            line.lineAmountExclVAT ??
             line.amount ??
             quantity * Number(line.unitPrice ?? 0),
         ),

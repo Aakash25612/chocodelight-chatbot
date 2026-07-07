@@ -281,7 +281,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales totals from posted invoice lines (incl. and excl. VAT) or sales order lines. Returns totalSalesIncludingTax and per-item salesIncludingTax — present these as the primary amounts (Incl. VAT). Use for product sales amount AND average selling price questions.",
+      "Get invoiced product sales from posted invoice lines. Primary: totalSalesIncludingTax / salesIncludingTax (amountIncludingVAT). Show salesExcludingTax only when user asks for excl VAT — that is BC line.amount (net after discount), not list-price lineAmountExclVAT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -444,7 +444,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_category_sales",
     description:
-      "Product category sales from posted invoice lines (Incl. VAT primary) or sales order lines. Present totalSalesIncludingTax and salesIncludingTax. Supports year/month/week/date range/Nepali month filters.",
+      "Product category sales from posted invoice lines. Primary: totalSalesIncludingTax (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT (BC line.amount).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: { ...periodToolProperties },
@@ -485,7 +485,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_customer_product_sales",
     description:
-      "What products ONE customer bought in a specific period. Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT). USE THIS for 'what did Bhatbhateni buy in June' — pass query + year + month (June=6), or dateFrom/dateTo, or week. Returns item lines for ONLY that window, not year-to-date.",
+      "What products ONE customer bought in a period. Primary: totalSalesIncludingTax (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT (BC line.amount).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
