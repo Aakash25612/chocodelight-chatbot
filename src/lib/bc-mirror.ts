@@ -11,6 +11,8 @@ export type MirrorEntity =
   | "custLedgEntries"
   | "salesOrders"
   | "salesOrderLines"
+  | "salesInvoiceLines"
+  | "salesCrMemoLines"
   | "mr"
   | "salespersons"
   | "items"

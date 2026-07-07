@@ -735,10 +735,24 @@ type SalesOrderLine = {
   unitPrice?: number;
 };
 
+type PostedInvoiceLine = {
+  documentNo?: string;
+  itemNo?: string;
+  quantity?: number;
+  unitOfMeasureCode?: string;
+  unitPrice?: number;
+  lineAmountExclVAT?: number;
+  postingDate?: string;
+  itemCategoryCode?: string;
+};
+
+type PostedCrMemoLine = PostedInvoiceLine & {
+  returnReasonCode?: string;
+};
+
 /**
- * Product-level invoiced sales from synced sales order lines.
- * BC does not expose posted invoice lines in this API; invoiced quantities on
- * sales order lines are the best available source (from ~Jul 2024 onward).
+ * Product-level posted sales from synced invoice lines (Choco Delight) or,
+ * as fallback, invoiced sales order lines.
  */
 export async function getProductSales(
   input?: {
@@ -750,14 +764,31 @@ export async function getProductSales(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
-  const [linesPayload, ordersPayload, itemsPayload] = await Promise.all([
-    getMirror("salesOrderLines") as Promise<MirrorPayload<SalesOrderLine>>,
-    getMirror("salesOrders") as Promise<MirrorPayload<SalesOrder>>,
-    getMirror("items") as Promise<MirrorPayload<Item>>,
-  ]);
+  const [invoiceLinesPayload, crMemoLinesPayload, itemsPayload] =
+    await Promise.all([
+      getMirror("salesInvoiceLines") as Promise<
+        MirrorPayload<PostedInvoiceLine>
+      >,
+      getMirror("salesCrMemoLines") as Promise<MirrorPayload<PostedCrMemoLine>>,
+      getMirror("items") as Promise<MirrorPayload<Item>>,
+    ]);
 
-  if (linesPayload.error) return { error: linesPayload.error };
-  if (ordersPayload.error) return { error: ordersPayload.error };
+  const usePostedInvoices =
+    !invoiceLinesPayload.error &&
+    Array.isArray(invoiceLinesPayload.value) &&
+    invoiceLinesPayload.value.length > 0;
+
+  let linesPayload: MirrorPayload<SalesOrderLine> = { value: [] };
+  let ordersPayload: MirrorPayload<SalesOrder> = { value: [] };
+
+  if (!usePostedInvoices) {
+    [linesPayload, ordersPayload] = await Promise.all([
+      getMirror("salesOrderLines") as Promise<MirrorPayload<SalesOrderLine>>,
+      getMirror("salesOrders") as Promise<MirrorPayload<SalesOrder>>,
+    ]);
+    if (linesPayload.error) return { error: linesPayload.error };
+    if (ordersPayload.error) return { error: ordersPayload.error };
+  }
 
   const orderDates = new Map<string, string>();
   for (const order of ordersPayload.value ?? []) {
@@ -798,6 +829,7 @@ export async function getProductSales(
       itemNo: string;
       name: string;
       category: string;
+      unitOfMeasureCode: string;
       quantityInvoiced: number;
       salesExcludingTax: number;
       lineCount: number;
@@ -810,42 +842,88 @@ export async function getProductSales(
   let earliest: string | null = null;
   let latest: string | null = null;
 
-  for (const line of linesPayload.value ?? []) {
-    const qtyInvoiced = Number(line.quantityInvoiced ?? 0);
-    if (qtyInvoiced <= 0) continue;
+  function addLine(inputLine: {
+    itemNo: string;
+    quantity: number;
+    sales: number;
+    postingDate: string;
+    unitOfMeasureCode?: string;
+    category?: string;
+  }): void {
+    if (!inputLine.postingDate || !period.matches(inputLine.postingDate)) return;
 
-    const itemNo = String(line.itemNo ?? "");
-    if (!itemNo || !matchesItem(itemNo)) continue;
-
-    const postingDate = orderDates.get(String(line.docNo ?? ""));
-    if (!postingDate || !period.matches(postingDate)) continue;
-
-    const unitPrice = Number(line.unitPrice ?? 0);
-    const lineSales = qtyInvoiced * unitPrice;
-    const meta = itemMeta.get(itemNo);
-
+    const meta = itemMeta.get(inputLine.itemNo);
     matchedLines += 1;
-    totalSales += lineSales;
-    totalQuantity += qtyInvoiced;
-    if (postingDate) {
-      if (!earliest || postingDate < earliest) earliest = postingDate;
-      if (!latest || postingDate > latest) latest = postingDate;
+    totalSales += inputLine.sales;
+    totalQuantity += inputLine.quantity;
+    if (!earliest || inputLine.postingDate < earliest) {
+      earliest = inputLine.postingDate;
+    }
+    if (!latest || inputLine.postingDate > latest) {
+      latest = inputLine.postingDate;
     }
 
     const agg =
-      byItem.get(itemNo) ??
+      byItem.get(inputLine.itemNo) ??
       {
-        itemNo,
+        itemNo: inputLine.itemNo,
         name: meta?.displayName ?? "",
-        category: meta?.itemCategory ?? "",
+        category: inputLine.category ?? meta?.itemCategory ?? "",
+        unitOfMeasureCode: inputLine.unitOfMeasureCode ?? "",
         quantityInvoiced: 0,
         salesExcludingTax: 0,
         lineCount: 0,
       };
-    agg.quantityInvoiced += qtyInvoiced;
-    agg.salesExcludingTax += lineSales;
+    agg.quantityInvoiced += inputLine.quantity;
+    agg.salesExcludingTax += inputLine.sales;
     agg.lineCount += 1;
-    byItem.set(itemNo, agg);
+    byItem.set(inputLine.itemNo, agg);
+  }
+
+  if (usePostedInvoices) {
+    for (const line of invoiceLinesPayload.value ?? []) {
+      const itemNo = String(line.itemNo ?? "");
+      const quantity = Number(line.quantity ?? 0);
+      if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
+
+      addLine({
+        itemNo,
+        quantity,
+        sales: Number(line.lineAmountExclVAT ?? 0),
+        postingDate: String(line.postingDate ?? ""),
+        unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
+        category: String(line.itemCategoryCode ?? ""),
+      });
+    }
+
+    for (const line of crMemoLinesPayload.value ?? []) {
+      const itemNo = String(line.itemNo ?? "");
+      const quantity = Number(line.quantity ?? 0);
+      if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
+
+      addLine({
+        itemNo,
+        quantity: -quantity,
+        sales: -Number(line.lineAmountExclVAT ?? 0),
+        postingDate: String(line.postingDate ?? ""),
+        unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
+      });
+    }
+  } else {
+    for (const line of linesPayload.value ?? []) {
+      const qtyInvoiced = Number(line.quantityInvoiced ?? 0);
+      if (qtyInvoiced <= 0) continue;
+
+      const itemNo = String(line.itemNo ?? "");
+      if (!itemNo || !matchesItem(itemNo)) continue;
+
+      addLine({
+        itemNo,
+        quantity: qtyInvoiced,
+        sales: qtyInvoiced * Number(line.unitPrice ?? 0),
+        postingDate: orderDates.get(String(line.docNo ?? "")) ?? "",
+      });
+    }
   }
 
   const items = [...byItem.values()]
@@ -865,12 +943,15 @@ export async function getProductSales(
     query: query || null,
     period: period.label,
     itemNumbers: explicitItems.length ? explicitItems : null,
-    basis:
-      "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. Posted invoice line API is not exposed; this covers synced sales orders only.",
+    basis: usePostedInvoices
+      ? "Posted sales invoice lines (lineAmountExclVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
+      : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates.",
     dataCoverage: {
       from: earliest,
       to: latest,
-      note: "Sales order line sync typically starts mid-2024. Older product sales may be missing even if customer ledger totals exist.",
+      note: usePostedInvoices
+        ? "Uses synced salesInvoiceHeaders/salesCrMemos expand lines from BC custom API."
+        : "Sales order line sync typically starts mid-2024. Run sync on Choco Delight for posted invoice lines.",
     },
     totalSalesExcludingTax: round(totalSales),
     totalQuantityInvoiced: round(totalQuantity),
@@ -879,6 +960,8 @@ export async function getProductSales(
     matchedLineCount: matchedLines,
     items,
     _syncedAt:
+      invoiceLinesPayload._syncedAt ??
+      crMemoLinesPayload._syncedAt ??
       linesPayload._syncedAt ??
       ordersPayload._syncedAt ??
       itemsPayload._syncedAt,

@@ -9,7 +9,15 @@ import {
   saveBranchSalesCache,
 } from "./branch-sales-cache";
 
-const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
+import {
+  flattenSalesCrMemoLines,
+  flattenSalesInvoiceLines,
+} from "./invoice-lines";
+
+const BASE_READ_ENTITIES: {
+  type: MirrorEntity;
+  fetch: () => Promise<unknown>;
+}[] = [
   { type: "companies", fetch: () => bcApi.getCompanies() },
   { type: "customers", fetch: () => bcApi.getCustomers() },
   { type: "custLedgEntries", fetch: () => bcApi.getCustomerLedgerEntries() },
@@ -22,6 +30,42 @@ const READ_ENTITIES: { type: MirrorEntity; fetch: () => Promise<unknown> }[] = [
   { type: "api_catalog", fetch: () => bcApi.getApiCatalog() },
 ];
 
+const CHOCODELIGHT_EXTRA_ENTITIES: {
+  type: MirrorEntity;
+  fetch: () => Promise<unknown>;
+}[] = [
+  {
+    type: "salesInvoiceLines",
+    fetch: async () => {
+      const payload = await bcApi.getSalesInvoiceHeaders();
+      const headers = (payload.value ?? []) as Parameters<
+        typeof flattenSalesInvoiceLines
+      >[0];
+      return { value: flattenSalesInvoiceLines(headers) };
+    },
+  },
+  {
+    type: "salesCrMemoLines",
+    fetch: async () => {
+      const payload = await bcApi.getSalesCrMemos();
+      const headers = (payload.value ?? []) as Parameters<
+        typeof flattenSalesCrMemoLines
+      >[0];
+      return { value: flattenSalesCrMemoLines(headers) };
+    },
+  },
+];
+
+function readEntitiesForCompany(company: CompanyKey): {
+  type: MirrorEntity;
+  fetch: () => Promise<unknown>;
+}[] {
+  if (company === "chocodelight") {
+    return [...BASE_READ_ENTITIES, ...CHOCODELIGHT_EXTRA_ENTITIES];
+  }
+  return BASE_READ_ENTITIES;
+}
+
 const MAX_INLINE_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const MIRROR_CHUNK_SIZE = 5000;
 
@@ -33,6 +77,58 @@ type LedgerEntry = {
 };
 
 function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
+  if (
+    type === "salesInvoiceLines" &&
+    payload &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { value?: unknown[] }).value)
+  ) {
+    return {
+      value: (payload as { value: Record<string, unknown>[] }).value.map(
+        (line) => ({
+          documentNo: line.documentNo,
+          lineNo: line.lineNo,
+          itemNo: line.itemNo,
+          description: line.description,
+          quantity: line.quantity,
+          unitOfMeasureCode: line.unitOfMeasureCode,
+          unitPrice: line.unitPrice,
+          lineAmountExclVAT: line.lineAmountExclVAT,
+          postingDate: line.postingDate,
+          sellToCustomerNo: line.sellToCustomerNo,
+          itemCategoryCode: line.itemCategoryCode,
+          accountabilityCenter: line.accountabilityCenter,
+          orderNo: line.orderNo,
+        }),
+      ),
+    };
+  }
+
+  if (
+    type === "salesCrMemoLines" &&
+    payload &&
+    typeof payload === "object" &&
+    Array.isArray((payload as { value?: unknown[] }).value)
+  ) {
+    return {
+      value: (payload as { value: Record<string, unknown>[] }).value.map(
+        (line) => ({
+          documentNo: line.documentNo,
+          lineNo: line.lineNo,
+          itemNo: line.itemNo,
+          description: line.description,
+          quantity: line.quantity,
+          unitOfMeasureCode: line.unitOfMeasureCode,
+          unitPrice: line.unitPrice,
+          lineAmountExclVAT: line.lineAmountExclVAT,
+          postingDate: line.postingDate,
+          sellToCustomerNo: line.sellToCustomerNo,
+          returnReasonCode: line.returnReasonCode,
+        }),
+      ),
+    };
+  }
+
   if (
     type !== "custLedgEntries" ||
     !payload ||
@@ -146,7 +242,7 @@ async function syncCompany(): Promise<CompanySyncResult> {
   const synced: string[] = [];
   const errors: { entity: string; error: string }[] = [];
 
-  for (const { type, fetch } of READ_ENTITIES) {
+  for (const { type, fetch } of readEntitiesForCompany(company)) {
     try {
       const payload = compactMirrorPayload(type, await fetch());
       const recordCount = Array.isArray((payload as { value?: unknown[] }).value)

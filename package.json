@@ -10,6 +10,7 @@
     "vpn:connect": "bash scripts/connect-vpn.sh",
     "sync:bc": "tsx scripts/sync-bc.ts",
     "build:branch-cache": "tsx scripts/build-branch-cache.ts",
+    "test:invoice-api": "tsx scripts/test-invoice-api.ts",
     "deploy": "vercel",
     "deploy:prod": "vercel --prod"
   },
