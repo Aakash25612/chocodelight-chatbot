@@ -283,7 +283,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales from posted invoice lines. Primary: totalSalesIncludingTax / salesIncludingTax (amountIncludingVAT). Show salesExcludingTax only when user asks for excl VAT — that is BC line.amount (net after discount), not list-price lineAmountExclVAT.",
+      "Get invoiced product sales from posted invoice lines. Primary: totalSalesIncludingTax / salesIncludingTax (amountIncludingVAT). REQUIRED: pass fiscalYearStart (e.g. 2082) when user says 'this year', YTD, or a Nepali fiscal year — without it you get ALL-TIME totals (not FY). Show salesExcludingTax only when user asks for excl VAT — that is BC line.amount (net after discount), not list-price lineAmountExclVAT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

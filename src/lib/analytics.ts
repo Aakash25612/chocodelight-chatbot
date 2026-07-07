@@ -1395,6 +1395,11 @@ export async function getProductSales(
     currency: "NPR",
     query: query || null,
     period: period.label,
+    isAllTime: period.label === "all synced dates",
+    periodWarning:
+      period.label === "all synced dates"
+        ? "No date filter applied — totals are ALL synced history, not this Nepali fiscal year. Re-call with fiscalYearStart for FY-scoped totals."
+        : null,
     itemNumbers: explicitItems.length ? explicitItems : null,
     displayNote:
       'Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax / totalSalesExcludingTax ONLY when the user explicitly asks for excl VAT or net amount — that field is BC line.amount (net revenue after discount), NOT lineAmountExclVAT (list price).',

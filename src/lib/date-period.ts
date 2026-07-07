@@ -107,6 +107,8 @@ export function resolveDatePeriod(
     label = `${monthName(input.month)} ${input.year}`;
   } else if (input?.year) {
     label = `AD year ${input.year}`;
+  } else if (input?.fiscalYearStart) {
+    label = `Nepali FY ${input.fiscalYearStart}/${String(input.fiscalYearStart + 1).slice(-2)}`;
   }
 
   return {
@@ -118,13 +120,14 @@ export function resolveDatePeriod(
       if (dateFrom && parsed.key < dateFrom) return false;
       if (dateTo && parsed.key > dateTo) return false;
 
-      if (nepaliMonthIndex !== null && input?.fiscalYearStart) {
+      if (input?.fiscalYearStart) {
         const date = new Date(parsed.y, parsed.m - 1, parsed.d);
         const fy = getNepaliFiscalYear(date);
-        const bs = toBs(date);
-        if (!fy || !bs) return false;
-        if (fy.startYear !== input.fiscalYearStart) return false;
-        if (bs.month !== nepaliMonthIndex) return false;
+        if (!fy || fy.startYear !== input.fiscalYearStart) return false;
+        if (nepaliMonthIndex !== null) {
+          const bs = toBs(date);
+          if (!bs || bs.month !== nepaliMonthIndex) return false;
+        }
       }
 
       if (input?.year && parsed.y !== input.year) return false;
@@ -151,7 +154,8 @@ export function periodFromInput(input?: DatePeriodInput): {
     input?.day ||
     input?.dateFrom ||
     input?.dateTo ||
-    input?.nepaliMonth;
+    input?.nepaliMonth ||
+    input?.fiscalYearStart;
 
   if (!hasFilter) {
     return {
