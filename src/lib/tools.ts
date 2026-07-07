@@ -303,7 +303,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_top_customers_by_month",
     description:
-      "Get top customers ranked by invoiced sales for ONE English (AD) calendar month. USE THIS for 'top customer in June 2026', 'best customer last month', etc. Uses customer ledger invoices (salesLcy) — NOT sales orders or company total revenue.",
+      "Top customers by invoiced sales for ONE English (AD) calendar month. Primary: salesIncludingTax (Incl. VAT).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -323,10 +323,14 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_top_customers",
     description:
-      "Rank customers by invoice sales (ledger), balance, overdue, or lifetime master sales. Use for 'top 10 customers this year', 'biggest customers overall'. For outstanding/receivable ranking use get_outstanding_receivables instead. For a specific AD month use get_top_customers_by_month instead.",
+      "Rank customers by invoice sales (posted invoice lines when synced), balance, overdue, or lifetime master sales. Primary: salesIncludingTax (Incl. VAT). Use fiscalYearStart for Nepali FY (e.g. 2082 for FY 2082/83). For outstanding ranking use get_outstanding_receivables.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
+        fiscalYearStart: {
+          type: SchemaType.NUMBER,
+          description: "Nepali FY start BS year, e.g. 2082 for FY 2082/83.",
+        },
         year: { type: SchemaType.NUMBER, description: "Optional AD year filter." },
         month: { type: SchemaType.NUMBER, description: "Optional AD month 1-12." },
         limit: { type: SchemaType.NUMBER, description: "Default 15." },
@@ -341,7 +345,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_top_customers_by_nepali_month",
     description:
-      "Top customers by invoiced sales for one Nepali (BS) month within a fiscal year. Use for 'top customer in Jestha 2082'.",
+      "Top customers by invoiced sales for one Nepali (BS) month within a fiscal year. Primary: salesIncludingTax (Incl. VAT).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -994,6 +998,10 @@ export async function executeTool(
       case "get_top_customers":
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getTopCustomers({
+          fiscalYearStart:
+            typeof args.fiscalYearStart === "number"
+              ? args.fiscalYearStart
+              : undefined,
           year: typeof args.year === "number" ? args.year : undefined,
           month: typeof args.month === "number" ? args.month : undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,

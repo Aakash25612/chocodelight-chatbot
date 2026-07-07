@@ -283,6 +283,88 @@ function aggregateLedgerByCustomer(
   return map;
 }
 
+type CustomerInvoiceSalesAgg = {
+  customerNo: string;
+  name: string;
+  salesIncl: number;
+  salesExcl: number;
+  invoiceDocs: Set<string>;
+};
+
+async function aggregateCustomersFromPostedInvoices(options: {
+  names: Map<string, string>;
+  matches?: (postingDate: string) => boolean;
+}): Promise<Map<string, CustomerInvoiceSalesAgg> | null> {
+  const posted = await loadPostedInvoiceLinePayloads();
+  if (!posted.usePostedInvoices) return null;
+
+  const map = new Map<string, CustomerInvoiceSalesAgg>();
+
+  function upsert(customerNo: string): CustomerInvoiceSalesAgg {
+    const existing = map.get(customerNo);
+    if (existing) return existing;
+    const agg: CustomerInvoiceSalesAgg = {
+      customerNo,
+      name: options.names.get(customerNo) ?? "",
+      salesIncl: 0,
+      salesExcl: 0,
+      invoiceDocs: new Set<string>(),
+    };
+    map.set(customerNo, agg);
+    return agg;
+  }
+
+  for (const line of posted.invoiceLines) {
+    const postingDate = String(line.postingDate ?? "");
+    if (options.matches && !options.matches(postingDate)) continue;
+    const customerNo = String(line.sellToCustomerNo ?? "").trim();
+    if (!customerNo) continue;
+    const agg = upsert(customerNo);
+    agg.salesIncl += postedLineSalesIncl(line);
+    agg.salesExcl += postedLineSalesExcl(line);
+    const doc = String(line.documentNo ?? "").trim();
+    if (doc) agg.invoiceDocs.add(doc);
+  }
+
+  for (const line of posted.crMemoLines) {
+    const postingDate = String(line.postingDate ?? "");
+    if (options.matches && !options.matches(postingDate)) continue;
+    const customerNo = String(line.sellToCustomerNo ?? "").trim();
+    if (!customerNo) continue;
+    const agg = upsert(customerNo);
+    agg.salesIncl -= Math.abs(postedLineSalesIncl(line));
+    agg.salesExcl -= Math.abs(postedLineSalesExcl(line));
+  }
+
+  return map;
+}
+
+function rankCustomerInvoiceSales(
+  map: Map<string, CustomerInvoiceSalesAgg>,
+  limit: number,
+) {
+  return [...map.values()]
+    .map((row) => ({
+      customerNo: row.customerNo,
+      name: row.name,
+      salesIncludingTax: round(row.salesIncl),
+      salesExcludingTax: round(row.salesExcl),
+      invoiceCount: row.invoiceDocs.size,
+    }))
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
+    .slice(0, limit);
+}
+
+function postingDateInNepaliFy(postingDate: string, startYear: number): boolean {
+  const date = parseDate(postingDate);
+  if (!date) return false;
+  const fy = getNepaliFiscalYear(date);
+  return fy?.startYear === startYear;
+}
+
+const CUSTOMER_SALES_DISPLAY_NOTE =
+  'Show salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax only when user asks for excl VAT (BC line.amount net after discount).';
+
 /** Top customers by invoiced sales for one AD calendar month (ledger basis). */
 export async function getTopCustomersByMonth(input?: {
   year?: number;
@@ -295,6 +377,35 @@ export async function getTopCustomersByMonth(input?: {
 
   const [ledgerPayload, names] = await Promise.all([loadLedger(), buildCustomerNameMap()]);
   if (ledgerPayload.error) return { error: ledgerPayload.error };
+
+  const fromInvoices = await aggregateCustomersFromPostedInvoices({
+    names,
+    matches: (postingDate) => {
+      const date = parseDate(postingDate);
+      if (!date) return false;
+      return inAdPeriod(date, year, month);
+    },
+  });
+
+  if (fromInvoices) {
+    const ranked = rankCustomerInvoiceSales(fromInvoices, limit);
+    const totalMonthSalesIncludingTax = round(
+      [...fromInvoices.values()].reduce((sum, row) => sum + row.salesIncl, 0),
+    );
+    return {
+      currency: "NPR",
+      period: { calendar: "Gregorian (AD)", year, month, monthName: monthName(month) },
+      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      basis:
+        "Posted sales invoice lines (amountIncludingVAT) minus credit memos, grouped by customer.",
+      totalMonthSalesIncludingTax,
+      totalMonthSales: totalMonthSalesIncludingTax,
+      invoiceCount: ranked.reduce((sum, row) => sum + row.invoiceCount, 0),
+      topCustomer: ranked[0] ?? null,
+      customers: ranked,
+      _syncedAt: (await loadPostedInvoiceLinePayloads()).syncedAt,
+    };
+  }
 
   const byCustomer = aggregateLedgerByCustomer(
     ledgerPayload.value ?? [],
@@ -310,17 +421,21 @@ export async function getTopCustomersByMonth(input?: {
     .map((row) => ({
       customerNo: row.customerNo,
       name: row.name,
+      salesIncludingTax: round(row.sales),
       salesExcludingTax: round(row.sales),
       invoiceCount: row.invoices,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
     .slice(0, limit);
 
   return {
     currency: "NPR",
     period: { calendar: "Gregorian (AD)", year, month, monthName: monthName(month) },
+    displayNote:
+      "Ledger sync — incl and excl VAT are the same (salesLcy). Run sync for posted invoice lines.",
     basis:
       "Customer ledger invoice entries (salesLcy). Authoritative for customer ranking by month.",
+    totalMonthSalesIncludingTax: totalMonthSales,
     totalMonthSales,
     invoiceCount: ranked.reduce((sum, row) => sum + row.invoiceCount, 0),
     topCustomer: ranked[0] ?? null,
@@ -389,6 +504,7 @@ export async function getOutstandingReceivables(input?: {
 export async function getTopCustomers(input?: {
   year?: number;
   month?: number;
+  fiscalYearStart?: number;
   limit?: number;
   rankBy?: "invoice_sales" | "balance" | "overdue" | "lifetime_master";
 }): Promise<unknown> {
@@ -471,11 +587,53 @@ export async function getTopCustomers(input?: {
     };
   }
 
+  const byCustomerFromInvoices = await aggregateCustomersFromPostedInvoices({
+    names,
+    matches: (postingDate) => {
+      if (input?.fiscalYearStart) {
+        return postingDateInNepaliFy(postingDate, input.fiscalYearStart);
+      }
+      if (input?.year || input?.month) {
+        const date = parseDate(postingDate);
+        if (!date) return false;
+        return inAdPeriod(date, input.year, input.month);
+      }
+      return true;
+    },
+  });
+
+  if (byCustomerFromInvoices) {
+    const ranked = rankCustomerInvoiceSales(byCustomerFromInvoices, limit);
+    return {
+      currency: "NPR",
+      rankBy: "invoice_sales",
+      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      period: {
+        fiscalYearStart: input?.fiscalYearStart ?? null,
+        fiscalYear: input?.fiscalYearStart
+          ? fiscalYearLabel(input.fiscalYearStart)
+          : null,
+        year: input?.year ?? "all_synced_years",
+        month: input?.month ?? null,
+        monthName: input?.month ? monthName(input.month) : null,
+      },
+      basis:
+        "Posted sales invoice lines (amountIncludingVAT) minus credit memos, grouped by customer.",
+      customers: ranked,
+      topCustomer: ranked[0] ?? null,
+      _syncedAt: (await loadPostedInvoiceLinePayloads()).syncedAt,
+    };
+  }
+
   const byCustomer = aggregateLedgerByCustomer(
     ledgerPayload.value ?? [],
     names,
     (entry, date) => {
       if (entry.documentType !== "Invoice") return false;
+      if (input?.fiscalYearStart) {
+        const fy = getNepaliFiscalYear(date);
+        if (!fy || fy.startYear !== input.fiscalYearStart) return false;
+      }
       if (input?.year || input?.month) {
         return inAdPeriod(date, input.year, input.month);
       }
@@ -487,22 +645,27 @@ export async function getTopCustomers(input?: {
     .map((row) => ({
       customerNo: row.customerNo,
       name: row.name,
+      salesIncludingTax: round(row.sales),
       salesExcludingTax: round(row.sales),
       invoiceCount: row.invoices,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
     .slice(0, limit);
 
   return {
     currency: "NPR",
     rankBy: "invoice_sales",
+    displayNote:
+      "Ledger sync — incl and excl VAT are the same (salesLcy). Run sync for posted invoice lines.",
     period: {
+      fiscalYearStart: input?.fiscalYearStart ?? null,
       year: input?.year ?? "all_synced_years",
       month: input?.month ?? null,
       monthName: input?.month ? monthName(input.month) : null,
     },
     basis: "Customer ledger invoice entries (salesLcy).",
     customers: ranked,
+    topCustomer: ranked[0] ?? null,
     _syncedAt: ledgerPayload._syncedAt,
   };
 }
@@ -521,12 +684,12 @@ export async function getTopCustomersByNepaliMonth(input?: {
     };
   }
 
-  const ledgerPayload = await loadLedger();
-  if (ledgerPayload.error) return { error: ledgerPayload.error };
-
   const names = await buildCustomerNameMap();
+
   let startYear = input?.fiscalYearStart;
   if (!startYear) {
+    const ledgerPayload = await loadLedger();
+    if (ledgerPayload.error) return { error: ledgerPayload.error };
     let latest: Date | null = null;
     for (const entry of ledgerPayload.value ?? []) {
       const date = parseDate(entry.postingDate);
@@ -537,6 +700,37 @@ export async function getTopCustomersByNepaliMonth(input?: {
       toBs(new Date())?.year ??
       new Date().getFullYear();
   }
+
+  const fromInvoices = await aggregateCustomersFromPostedInvoices({
+    names,
+    matches: (postingDate) => {
+      const date = parseDate(postingDate);
+      if (!date) return false;
+      const fy = getNepaliFiscalYear(date);
+      if (!fy || fy.startYear !== startYear) return false;
+      const bs = toBs(date);
+      return Boolean(bs && bs.month === monthIndex);
+    },
+  });
+
+  if (fromInvoices) {
+    const ranked = rankCustomerInvoiceSales(fromInvoices, limit);
+    return {
+      currency: "NPR",
+      calendar: "Bikram Sambat",
+      fiscalYear: fiscalYearLabel(startYear),
+      nepaliMonth: BS_MONTHS[monthIndex],
+      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      basis:
+        "Posted sales invoice lines (amountIncludingVAT) minus credit memos, grouped by customer.",
+      customers: ranked,
+      topCustomer: ranked[0] ?? null,
+      _syncedAt: (await loadPostedInvoiceLinePayloads()).syncedAt,
+    };
+  }
+
+  const ledgerPayload = await loadLedger();
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
 
   const byCustomer = new Map<string, CustomerAgg>();
 
@@ -570,10 +764,11 @@ export async function getTopCustomersByNepaliMonth(input?: {
     .map((row) => ({
       customerNo: row.customerNo,
       name: row.name,
+      salesIncludingTax: round(row.sales),
       salesExcludingTax: round(row.sales),
       invoiceCount: row.invoices,
     }))
-    .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax)
+    .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
     .slice(0, limit);
 
   return {
@@ -581,6 +776,8 @@ export async function getTopCustomersByNepaliMonth(input?: {
     calendar: "Bikram Sambat",
     fiscalYear: fiscalYearLabel(startYear),
     nepaliMonth: BS_MONTHS[monthIndex],
+    displayNote:
+      "Ledger sync — incl and excl VAT are the same (salesLcy). Run sync for posted invoice lines.",
     basis: "Customer ledger invoice entries (salesLcy).",
     customers: ranked,
     topCustomer: ranked[0] ?? null,

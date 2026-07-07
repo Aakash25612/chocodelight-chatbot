@@ -151,6 +151,7 @@ Tool selection:
 - English (AD) Jan–Dec month-wise revenue for one AD year ONLY -> get_monthly_revenue.
 - Top customer(s) for a specific AD month (e.g. "June 2026 AD") -> get_top_customers_by_month.
 - Top customers for a Nepali month (e.g. Jestha) -> get_top_customers_by_nepali_month.
+- Top customers this Nepali fiscal year / overall -> get_top_customers with fiscalYearStart for current FY. ALWAYS show salesIncludingTax (Incl. VAT) for customer sales — never label as excl. tax unless user explicitly asks.
 - One customer's sales in a period -> get_customer_sales.
 - Day-by-day sales in a month -> get_daily_revenue.
 - Compare two months or years -> compare_revenue_periods.
