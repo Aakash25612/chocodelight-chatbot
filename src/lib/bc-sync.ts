@@ -6,12 +6,14 @@ import { getActiveCompany, runWithCompany } from "./company-context";
 import { buildDerivedCustomersPayload } from "./derived-customers";
 import {
   buildBranchSalesCache,
+  buildBranchSalesCacheFromDocuments,
   saveBranchSalesCache,
 } from "./branch-sales-cache";
 
 import {
   flattenSalesCrMemoLines,
   flattenSalesInvoiceLines,
+  flattenPostedSalesDocuments,
 } from "./invoice-lines";
 
 const BASE_READ_ENTITIES: {
@@ -30,7 +32,7 @@ const BASE_READ_ENTITIES: {
   { type: "api_catalog", fetch: () => bcApi.getApiCatalog() },
 ];
 
-const CHOCODELIGHT_EXTRA_ENTITIES: {
+const INVOICE_EXTRA_ENTITIES: {
   type: MirrorEntity;
   fetch: () => Promise<unknown>;
 }[] = [
@@ -41,7 +43,7 @@ const CHOCODELIGHT_EXTRA_ENTITIES: {
       const headers = (payload.value ?? []) as Parameters<
         typeof flattenSalesInvoiceLines
       >[0];
-      return { value: flattenSalesInvoiceLines(headers) };
+      return { value: flattenSalesInvoiceLines(headers), headers };
     },
   },
   {
@@ -51,19 +53,16 @@ const CHOCODELIGHT_EXTRA_ENTITIES: {
       const headers = (payload.value ?? []) as Parameters<
         typeof flattenSalesCrMemoLines
       >[0];
-      return { value: flattenSalesCrMemoLines(headers) };
+      return { value: flattenSalesCrMemoLines(headers), headers };
     },
   },
 ];
 
-function readEntitiesForCompany(company: CompanyKey): {
+function readEntitiesForCompany(_company: CompanyKey): {
   type: MirrorEntity;
   fetch: () => Promise<unknown>;
 }[] {
-  if (company === "chocodelight") {
-    return [...BASE_READ_ENTITIES, ...CHOCODELIGHT_EXTRA_ENTITIES];
-  }
-  return BASE_READ_ENTITIES;
+  return [...BASE_READ_ENTITIES, ...INVOICE_EXTRA_ENTITIES];
 }
 
 const MAX_INLINE_PAYLOAD_BYTES = 8 * 1024 * 1024;
@@ -93,6 +92,7 @@ function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
           quantity: line.quantity,
           unitOfMeasureCode: line.unitOfMeasureCode,
           unitPrice: line.unitPrice,
+          lineAmount: line.lineAmount,
           lineAmountExclVAT: line.lineAmountExclVAT,
           lineAmountInclVAT: line.lineAmountInclVAT,
           postingDate: line.postingDate,
@@ -121,6 +121,7 @@ function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
           quantity: line.quantity,
           unitOfMeasureCode: line.unitOfMeasureCode,
           unitPrice: line.unitPrice,
+          lineAmount: line.lineAmount,
           lineAmountExclVAT: line.lineAmountExclVAT,
           lineAmountInclVAT: line.lineAmountInclVAT,
           postingDate: line.postingDate,
@@ -244,9 +245,14 @@ async function syncCompany(): Promise<CompanySyncResult> {
   const synced: string[] = [];
   const errors: { entity: string; error: string }[] = [];
 
+  let ledgerEntries: LedgerEntry[] | null = null;
+  let invoiceHeaders: Parameters<typeof flattenSalesInvoiceLines>[0] | null = null;
+  let crMemoHeaders: Parameters<typeof flattenSalesCrMemoLines>[0] | null = null;
+
   for (const { type, fetch } of readEntitiesForCompany(company)) {
     try {
-      const payload = compactMirrorPayload(type, await fetch());
+      const raw = await fetch();
+      const payload = compactMirrorPayload(type, raw);
       const recordCount = Array.isArray((payload as { value?: unknown[] }).value)
         ? (payload as { value: unknown[] }).value.length
         : 1;
@@ -263,10 +269,19 @@ async function syncCompany(): Promise<CompanySyncResult> {
         type === "custLedgEntries" &&
         Array.isArray((payload as { value?: unknown[] }).value)
       ) {
-        const branchCache = buildBranchSalesCache(
-          (payload as { value: LedgerEntry[] }).value,
-        );
-        await saveBranchSalesCache(branchCache);
+        ledgerEntries = (payload as { value: LedgerEntry[] }).value;
+      }
+
+      if (type === "salesInvoiceLines" && raw && typeof raw === "object") {
+        invoiceHeaders =
+          (raw as { headers?: Parameters<typeof flattenSalesInvoiceLines>[0] })
+            .headers ?? null;
+      }
+
+      if (type === "salesCrMemoLines" && raw && typeof raw === "object") {
+        crMemoHeaders =
+          (raw as { headers?: Parameters<typeof flattenSalesCrMemoLines>[0] })
+            .headers ?? null;
       }
 
       await supabase.from("bc_sync_meta").upsert({
@@ -289,6 +304,49 @@ async function syncCompany(): Promise<CompanySyncResult> {
         record_count: 0,
         status: "error",
         error: message,
+      });
+    }
+  }
+
+  if (invoiceHeaders && crMemoHeaders) {
+    try {
+      const postedDocuments = flattenPostedSalesDocuments(
+        invoiceHeaders,
+        crMemoHeaders,
+        company,
+      );
+      const syncedAt = new Date().toISOString();
+      await upsertMirrorPayload({
+        company,
+        type: "postedSalesDocuments",
+        payload: { value: postedDocuments },
+        syncedAt,
+      });
+
+      const branchCache = buildBranchSalesCacheFromDocuments(postedDocuments);
+      await saveBranchSalesCache(branchCache);
+
+      await supabase.from("bc_sync_meta").upsert({
+        company,
+        key: "postedSalesDocuments",
+        last_synced_at: syncedAt,
+        record_count: postedDocuments.length,
+        status: "ok",
+        error: null,
+      });
+      synced.push("postedSalesDocuments");
+    } catch (error) {
+      const message = errorMessage(error);
+      errors.push({ entity: "postedSalesDocuments", error: message });
+    }
+  } else if (ledgerEntries) {
+    try {
+      const branchCache = buildBranchSalesCache(ledgerEntries);
+      await saveBranchSalesCache(branchCache);
+    } catch (error) {
+      errors.push({
+        entity: "branch_sales_cache",
+        error: errorMessage(error),
       });
     }
   }

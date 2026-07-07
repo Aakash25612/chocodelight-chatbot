@@ -211,7 +211,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_summary",
     description:
-      "Total sales summary across ALL synced data (all-time, by Nepali fiscal year, by AD year). Do NOT use for branch-wise or depot-wise sales — use get_branch_wise_sales instead.",
+      "Total sales summary across ALL synced data (all-time, by Nepali fiscal year, by AD year). Uses posted sales invoice/credit memo documents when synced (matches ledger); falls back to customer ledger. Do NOT use for branch-wise or depot-wise sales — use get_branch_wise_sales instead.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
@@ -503,7 +503,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_branch_wise_sales",
     description:
-      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales (especially Saurabh Food). Returns every branch ranked by posted invoice sales (salesLcy). Invoice documents use accountability codes: B=Bhairawa, S=Birgunj, D=Nepalgunj, K=Kathmandu, W=Butwal, etc. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
+      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales (especially Saurabh Food). Returns every branch ranked by posted invoice sales. Saurabh codes: J=Bhairahawa, I=Butwal, S=Birgunj Factory, B=Biratnagar Office, K=Pokhara, D=Nepalgunj, etc. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -514,13 +514,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "list_branches",
     description:
-      "List branch/depot codes and names for the active company. Saurabh Food uses accountability-center codes on invoices (B_SFP_..., W_SFP_...). Use before get_sales_by_branch when the user asks about a branch by name.",
+      "List branch/depot codes and names for the active company. Saurabh Food uses accountability-center codes on invoices (J_SFP_..., S_SFP_..., EXP_SFP_...). Use before get_sales_by_branch when the user asks about a branch by name.",
     parameters: { type: SchemaType.OBJECT, properties: {} },
   },
   {
     name: "get_sales_by_branch",
     description:
-      "Posted invoice sales for one branch/depot by name or code. Saurabh Food: Bhairawa=B, Birgunj=S, Nepalgunj=D, Kathmandu=K, Butwal=W, etc. Uses ledger invoices (salesLcy), not sales orders. Set monthlyBreakdown=true for month-by-month sales in current Nepali fiscal year (Shrawan → Ashadh). Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
+      "Posted invoice sales for one branch/depot by name or code. Saurabh: Bhairahawa=J, Butwal=I, Birgunj Factory=S, Biratnagar Office=B, Pokhara=K, Nepalgunj=D. Uses posted invoice documents when synced (else ledger). Set monthlyBreakdown=true for month-by-month sales in current Nepali fiscal year (Shrawan → Ashadh). Supports Nepali fiscal period filters (fiscalYearStart, nepaliMonth) or AD date range.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -530,7 +530,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
         },
         branchCode: {
           type: SchemaType.STRING,
-          description: "Single-letter accountability code, e.g. B for Bhairawa.",
+          description: "Accountability code, e.g. J for Bhairahawa, I for Butwal, EXP, JB, TN.",
         },
         monthlyBreakdown: {
           type: SchemaType.BOOLEAN,

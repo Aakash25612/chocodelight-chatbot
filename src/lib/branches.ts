@@ -8,85 +8,142 @@ export type BranchDefinition = {
 };
 
 /**
- * Accountability-center / document-prefix codes for Saurabh Food.
- * Invoice document numbers use `{code}_SFP_...`; sales orders carry the same code
- * in accountabilityCenter, locationCode, and dimCode1.
+ * Official accountability-center codes for Saurabh Food (invoice document prefix
+ * and accountabilityCenter on posted sales documents).
  */
 const SAURABHFOOD_BRANCHES: BranchDefinition[] = [
   {
-    code: "B",
-    name: "Bhairawa Branch",
-    aliases: [
-      "bhairawa",
-      "bhairahawa",
-      "bhairowa",
-      "bhw",
-      "siddharthanagar",
-    ],
-  },
-  {
-    code: "S",
-    name: "Birgunj Branch",
-    aliases: ["birgunj", "birgunj factory", "simara"],
-  },
-  {
-    code: "D",
-    name: "Nepalgunj Branch",
-    aliases: ["nepalgunj", "npj", "npj depo"],
-  },
-  {
-    code: "K",
-    name: "Kathmandu Branch",
-    aliases: ["kathmandu", "ktm"],
-  },
-  {
-    code: "W",
-    name: "Butwal Branch",
-    aliases: ["butwal", "western"],
-  },
-  {
-    code: "H",
-    name: "Hetauda Branch",
-    aliases: ["hetauda"],
-  },
-  {
     code: "A",
-    name: "Branch A",
-    aliases: [],
+    name: "Jadibuti-32, Kathmandu",
+    aliases: ["jadibuti", "jadibuti 32", "kathmandu"],
+  },
+  {
+    code: "B",
+    name: "Biratnagar Office",
+    aliases: ["biratnagar office", "biratnagar"],
   },
   {
     code: "C",
-    name: "Branch C",
-    aliases: [],
+    name: "Birgunj Office",
+    aliases: ["birgunj office"],
+  },
+  {
+    code: "D",
+    name: "Nepalgunj Sales Depot",
+    aliases: ["nepalgunj", "npj"],
   },
   {
     code: "E",
-    name: "Branch E",
-    aliases: [],
+    name: "Birtamode Sales Depot",
+    aliases: ["birtamode"],
   },
   {
-    code: "G",
-    name: "Branch G",
-    aliases: [],
-  },
-  {
-    code: "I",
-    name: "Branch I",
-    aliases: [],
-  },
-  {
-    code: "J",
-    name: "Branch J",
-    aliases: [],
-  },
-  {
-    code: "M",
-    name: "Branch M",
-    aliases: [],
+    code: "EXP",
+    name: "Biratnagar Factory Exp",
+    aliases: ["biratnagar factory exp", "factory exp"],
   },
   {
     code: "F",
-    name: "Branch F",
+    name: "Dhulabari Sales Depot",
+    aliases: ["dhulabari"],
+  },
+  {
+    code: "G",
+    name: "Janakpur Sales Depot",
+    aliases: ["janakpur"],
+  },
+  {
+    code: "H",
+    name: "Narayanghat Sales Depot",
+    aliases: ["narayanghat", "hetauda"],
+  },
+  {
+    code: "I",
+    name: "Butwal Sales Depot",
+    aliases: ["butwal"],
+  },
+  {
+    code: "J",
+    name: "Bhairahawa Sales Depot",
+    aliases: ["bhairahawa", "bhairawa", "bhairowa", "siddharthanagar"],
+  },
+  {
+    code: "JB",
+    name: "Jar & Bottle Division",
+    aliases: ["jar bottle", "jar & bottle"],
+  },
+  {
+    code: "K",
+    name: "Pokhara Sales Depot",
+    aliases: ["pokhara"],
+  },
+  {
+    code: "L",
+    name: "Chanaouta Sales Depot",
+    aliases: ["chanaouta"],
+  },
+  {
+    code: "M",
+    name: "Dhangadhi Sales Depot",
+    aliases: ["dhangadhi"],
+  },
+  {
+    code: "N",
+    name: "Satti Purchase Depot",
+    aliases: ["satti"],
+  },
+  {
+    code: "O",
+    name: "Biratnagar Sales Depot",
+    aliases: ["biratnagar sales", "biratnagar depot"],
+  },
+  {
+    code: "P",
+    name: "Manhara Sales Depot",
+    aliases: ["manhara"],
+  },
+  {
+    code: "Q",
+    name: "Jadibuti Sales Depot",
+    aliases: ["jadibuti sales", "jadibuti depot"],
+  },
+  {
+    code: "R",
+    name: "Biratnagar Factory",
+    aliases: ["biratnagar factory"],
+  },
+  {
+    code: "S",
+    name: "Birgunj Factory",
+    aliases: ["birgunj factory", "birgunj"],
+  },
+  {
+    code: "T",
+    name: "Nepalgunj Factory",
+    aliases: ["nepalgunj factory"],
+  },
+  {
+    code: "TN",
+    name: "Tina Division",
+    aliases: ["tina"],
+  },
+  {
+    code: "U",
+    name: "Jamal Sales Depot",
+    aliases: ["jamal"],
+  },
+  {
+    code: "V",
+    name: "JutePress Godown",
+    aliases: ["jute press", "jutepress"],
+  },
+];
+
+/** Historical BC document prefix still present on older Saurabh invoices. */
+const SAURABHFOOD_LEGACY_CODES: BranchDefinition[] = [
+  {
+    code: "W",
+    name: "Butwal Sales Depot (legacy W)",
     aliases: [],
   },
 ];
@@ -109,20 +166,96 @@ const BRANCHES: Record<CompanyKey, BranchDefinition[]> = {
   saurabhfood: SAURABHFOOD_BRANCHES,
 };
 
+/** Map legacy document prefixes to current accountability codes. */
+const LEGACY_BRANCH_CODE_MAP: Partial<Record<CompanyKey, Record<string, string>>> =
+  {
+    saurabhfood: { W: "I" },
+  };
+
 export function listBranchDefinitions(
   company: CompanyKey = getActiveCompany(),
 ): BranchDefinition[] {
   return BRANCHES[company] ?? [];
 }
 
-export function branchCodeFromDocument(documentNo?: string): string | null {
-  const match = /^([A-Z])_/.exec(String(documentNo ?? "").trim());
-  return match ? match[1] : null;
+export function normalizeBranchCode(
+  code: string,
+  company: CompanyKey = getActiveCompany(),
+): string {
+  const upper = code.trim().toUpperCase();
+  return LEGACY_BRANCH_CODE_MAP[company]?.[upper] ?? upper;
+}
+
+/** Document-prefix codes sorted longest-first (EXP, JB, TN before single letters). */
+export function knownBranchCodePrefixes(
+  company: CompanyKey = getActiveCompany(),
+): string[] {
+  const codes = [
+    ...listBranchDefinitions(company).map((branch) => branch.code),
+    ...(company === "saurabhfood"
+      ? SAURABHFOOD_LEGACY_CODES.map((branch) => branch.code)
+      : []),
+  ];
+  return [...new Set(codes.map((code) => code.toUpperCase()))].sort(
+    (a, b) => b.length - a.length,
+  );
+}
+
+export function branchCodeFromDocument(
+  documentNo?: string,
+  company: CompanyKey = getActiveCompany(),
+): string | null {
+  const doc = String(documentNo ?? "").trim();
+  if (!doc) return null;
+
+  for (const prefix of knownBranchCodePrefixes(company)) {
+    if (doc.startsWith(`${prefix}_`)) {
+      return normalizeBranchCode(prefix, company);
+    }
+  }
+
+  return null;
+}
+
+export function branchCodeFromPostedDocument(input?: {
+  documentNo?: string;
+  accountabilityCenter?: string;
+  locationCode?: string;
+  shortcutDimension1Code?: string;
+  company?: CompanyKey;
+}): string | null {
+  const company = input?.company ?? getActiveCompany();
+  const candidates = [
+    input?.accountabilityCenter,
+    input?.locationCode,
+    input?.shortcutDimension1Code,
+  ]
+    .map((value) => String(value ?? "").trim().toUpperCase())
+    .filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (knownBranchCodePrefixes(company).includes(candidate)) {
+      return normalizeBranchCode(candidate, company);
+    }
+  }
+
+  return branchCodeFromDocument(input?.documentNo, company);
 }
 
 export function branchNameForCode(code: string): string {
-  const hit = listBranchDefinitions().find((b) => b.code === code);
-  return hit?.name ?? `Branch ${code}`;
+  const normalized = normalizeBranchCode(code);
+  const branches = listBranchDefinitions();
+  const hit = branches.find((branch) => branch.code === normalized);
+  if (hit) return hit.name;
+
+  if (getActiveCompany() === "saurabhfood") {
+    const legacy = SAURABHFOOD_LEGACY_CODES.find(
+      (branch) => branch.code === code.trim().toUpperCase(),
+    );
+    if (legacy) return legacy.name;
+  }
+
+  return `Branch ${normalized}`;
 }
 
 function normalizeTerm(value: string): string {
@@ -149,36 +282,43 @@ export function resolveBranch(input?: {
   | { error: string; branches?: BranchDefinition[] } {
   const company = input?.company ?? getActiveCompany();
   const branches = listBranchDefinitions(company);
+  const knownPrefixes = knownBranchCodePrefixes(company);
 
   if (input?.branchCode?.trim()) {
-    const code = input.branchCode.trim().toUpperCase();
-    const hit = branches.find((b) => b.code === code);
+    const raw = input.branchCode.trim().toUpperCase();
+    const code = normalizeBranchCode(raw, company);
+    const hit = branches.find((branch) => branch.code === code);
     if (hit) return hit;
-    if (/^[A-Z]$/.test(code)) {
+    if (knownPrefixes.includes(raw)) {
       return { code, name: branchNameForCode(code), aliases: [] };
     }
     return {
-      error: `Branch code "${code}" is not in the registry for this company.`,
+      error: `Branch code "${raw}" is not in the registry for this company.`,
       branches,
     };
   }
 
   const query = normalizeTerm(input?.query ?? "");
   if (!query) {
-    return { error: "Pass branch name (e.g. Bhairawa) or branchCode (e.g. B).", branches };
+    return {
+      error: "Pass branch name (e.g. Bhairahawa) or branchCode (e.g. J).",
+      branches,
+    };
   }
 
   for (const branch of branches) {
     if (normalizeTerm(branch.name).includes(query)) return branch;
     if (normalizeTerm(branch.code) === query) return branch;
     for (const alias of branch.aliases) {
-      if (normalizeTerm(alias).includes(query) || query.includes(normalizeTerm(alias))) {
+      if (
+        normalizeTerm(alias).includes(query) ||
+        query.includes(normalizeTerm(alias))
+      ) {
         return branch;
       }
     }
   }
 
-  // Partial alias match (e.g. "bhair" -> Bhairawa)
   const partial = branches.filter((branch) => {
     const terms = [branch.name, branch.code, ...branch.aliases].map(normalizeTerm);
     return terms.some((term) => termMatchesQuery(term, query));

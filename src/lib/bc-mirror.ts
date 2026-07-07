@@ -13,6 +13,7 @@ export type MirrorEntity =
   | "salesOrderLines"
   | "salesInvoiceLines"
   | "salesCrMemoLines"
+  | "postedSalesDocuments"
   | "mr"
   | "salespersons"
   | "items"

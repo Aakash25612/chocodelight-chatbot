@@ -1,4 +1,5 @@
 import { branchCodeFromDocument, branchNameForCode } from "./branches";
+import type { PostedSalesDocument } from "./invoice-lines";
 import {
   BS_MONTHS,
   getNepaliFiscalYear,
@@ -9,7 +10,7 @@ import { getMirrorCache } from "./bc-mirror";
 import { getSupabaseAdmin } from "./supabase";
 import { getActiveCompany } from "./company-context";
 
-const CACHE_KEY = "branch_sales:v2";
+const CACHE_KEY = "branch_sales:v3";
 
 /** Bikram Sambat fiscal month order: Shrawan → Ashadh. */
 const FISCAL_MONTH_ORDER = [3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2];
@@ -48,6 +49,7 @@ export type BranchSalesCache = {
   /** branchCode → FY label → BS months in fiscal order */
   byBranchNepaliMonthly: Record<string, Record<string, BranchMonthRow[]>>;
   _builtAt: string;
+  _source?: "posted_invoices" | "customer_ledger";
 };
 
 function round(value: number): number {
@@ -90,9 +92,14 @@ function fiscalMonthRows(
   });
 }
 
-/** Build branch sales aggregates from ledger invoice rows (run during sync). */
-export function buildBranchSalesCache(
-  entries: LedgerEntry[],
+function buildBranchSalesCacheInternal(
+  entries: Array<{
+    branchCode: string;
+    postingDate?: string;
+    sales: number;
+    isInvoice: boolean;
+  }>,
+  source: BranchSalesCache["_source"],
 ): BranchSalesCache {
   const allTime = new Map<string, { sales: number; invoices: number }>();
   const byFy = new Map<
@@ -106,15 +113,12 @@ export function buildBranchSalesCache(
   const fyStartYears = new Map<string, number>();
 
   for (const entry of entries) {
-    if (entry.documentType !== "Invoice") continue;
-    const code = branchCodeFromDocument(entry.documentNo);
-    if (!code) continue;
-
-    const sales = Number(entry.salesLcy ?? 0);
+    const code = entry.branchCode;
+    const sales = entry.sales;
 
     const allAgg = allTime.get(code) ?? { sales: 0, invoices: 0 };
     allAgg.sales += sales;
-    allAgg.invoices += 1;
+    if (entry.isInvoice) allAgg.invoices += 1;
     allTime.set(code, allAgg);
 
     const date = parseDate(entry.postingDate);
@@ -127,7 +131,7 @@ export function buildBranchSalesCache(
     const fyMap = byFy.get(fy.label) ?? new Map();
     const fyAgg = fyMap.get(code) ?? { sales: 0, invoices: 0 };
     fyAgg.sales += sales;
-    fyAgg.invoices += 1;
+    if (entry.isInvoice) fyAgg.invoices += 1;
     fyMap.set(code, fyAgg);
     byFy.set(fy.label, fyMap);
 
@@ -144,7 +148,7 @@ export function buildBranchSalesCache(
       bsYear: bs.year,
     };
     monthAgg.sales += sales;
-    monthAgg.invoices += 1;
+    if (entry.isInvoice) monthAgg.invoices += 1;
     monthMap.set(bs.month, monthAgg);
     branchFy.set(fy.label, monthMap);
     byBranchFyMonth.set(code, branchFy);
@@ -188,7 +192,45 @@ export function buildBranchSalesCache(
     ),
     byBranchNepaliMonthly,
     _builtAt: new Date().toISOString(),
+    _source: source,
   };
+}
+
+/** Build branch sales from posted invoice/credit memo headers (preferred). */
+export function buildBranchSalesCacheFromDocuments(
+  documents: PostedSalesDocument[],
+): BranchSalesCache {
+  const entries = documents.map((doc) => ({
+    branchCode: doc.branchCode,
+    postingDate: doc.postingDate,
+    sales:
+      doc.documentKind === "credit_memo"
+        ? -Math.abs(doc.salesAmount)
+        : doc.salesAmount,
+    isInvoice: doc.documentKind === "invoice",
+  }));
+  return buildBranchSalesCacheInternal(entries, "posted_invoices");
+}
+
+/** Build branch sales aggregates from ledger invoice rows (fallback). */
+export function buildBranchSalesCache(
+  entries: LedgerEntry[],
+): BranchSalesCache {
+  const normalized = entries
+    .filter((entry) => entry.documentType === "Invoice")
+    .flatMap((entry) => {
+      const code = branchCodeFromDocument(entry.documentNo);
+      if (!code) return [];
+      return [
+        {
+          branchCode: code,
+          postingDate: entry.postingDate,
+          sales: Number(entry.salesLcy ?? 0),
+          isInvoice: true,
+        },
+      ];
+    });
+  return buildBranchSalesCacheInternal(normalized, "customer_ledger");
 }
 
 export async function saveBranchSalesCache(

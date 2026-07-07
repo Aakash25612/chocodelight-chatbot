@@ -1,5 +1,8 @@
 /** Flatten posted sales invoice / credit memo lines from BC header expand payloads. */
 
+import { branchCodeFromPostedDocument } from "./branches";
+import type { CompanyKey } from "./companies";
+
 type InvoiceHeader = {
   no?: string;
   postingDate?: string;
@@ -7,6 +10,9 @@ type InvoiceHeader = {
   billToCustomerNo?: string;
   dueDate?: string;
   locationCode?: string;
+  shortcutDimension1Code?: string;
+  accountabilityCenter?: string;
+  orderNo?: string;
   salespersonCode?: string;
   salesInvoiceLines?: InvoiceLine[];
 };
@@ -16,6 +22,9 @@ type CrMemoHeader = {
   postingDate?: string;
   sellToCustomerNo?: string;
   billToCustomerNo?: string;
+  locationCode?: string;
+  shortcutDimension1Code?: string;
+  accountabilityCenter?: string;
   salesCrMemoLines?: CrMemoLine[];
 };
 
@@ -64,6 +73,8 @@ export type FlatInvoiceLine = {
   quantity: number;
   unitOfMeasureCode: string;
   unitPrice: number;
+  /** BC line.amount — matches customer-ledger salesLcy for revenue totals. */
+  lineAmount: number;
   lineAmountExclVAT: number;
   lineAmountInclVAT: number;
   postingDate: string;
@@ -82,12 +93,87 @@ export type FlatCrMemoLine = {
   quantity: number;
   unitOfMeasureCode: string;
   unitPrice: number;
+  lineAmount: number;
   lineAmountExclVAT: number;
   lineAmountInclVAT: number;
   postingDate: string;
   sellToCustomerNo: string;
   returnReasonCode: string;
 };
+
+export type PostedSalesDocument = {
+  documentNo: string;
+  postingDate: string;
+  branchCode: string;
+  salesAmount: number;
+  documentKind: "invoice" | "credit_memo";
+};
+
+function documentKey(header: {
+  no?: string;
+  orderNo?: string;
+  postingDate?: string;
+}): string {
+  const no = String(header.no ?? "").trim();
+  if (no && no !== "0.00") return no;
+  const orderNo = String(header.orderNo ?? "").trim();
+  if (orderNo) return orderNo;
+  return `${no || "unknown"}:${header.postingDate ?? ""}`;
+}
+
+function sumLineAmounts(lines: Array<{ amount?: number }>): number {
+  return lines.reduce((sum, line) => sum + Number(line.amount ?? 0), 0);
+}
+
+export function flattenPostedSalesDocuments(
+  invoices: InvoiceHeader[],
+  creditMemos: CrMemoHeader[],
+  company?: CompanyKey,
+): PostedSalesDocument[] {
+  const rows: PostedSalesDocument[] = [];
+
+  for (const header of invoices) {
+    const documentNo = documentKey(header);
+    const branchCode = branchCodeFromPostedDocument({
+      documentNo,
+      accountabilityCenter: header.accountabilityCenter,
+      locationCode: header.locationCode,
+      shortcutDimension1Code: header.shortcutDimension1Code,
+      company,
+    });
+    if (!branchCode) continue;
+
+    rows.push({
+      documentNo,
+      postingDate: String(header.postingDate ?? ""),
+      branchCode,
+      salesAmount: sumLineAmounts(header.salesInvoiceLines ?? []),
+      documentKind: "invoice",
+    });
+  }
+
+  for (const header of creditMemos) {
+    const documentNo = documentKey(header);
+    const branchCode = branchCodeFromPostedDocument({
+      documentNo,
+      accountabilityCenter: header.accountabilityCenter,
+      locationCode: header.locationCode,
+      shortcutDimension1Code: header.shortcutDimension1Code,
+      company,
+    });
+    if (!branchCode) continue;
+
+    rows.push({
+      documentNo,
+      postingDate: String(header.postingDate ?? ""),
+      branchCode,
+      salesAmount: sumLineAmounts(header.salesCrMemoLines ?? []),
+      documentKind: "credit_memo",
+    });
+  }
+
+  return rows;
+}
 
 function isItemLine(type?: string, itemNo?: string): boolean {
   const normalized = String(type ?? "").trim().toLowerCase();
@@ -117,6 +203,11 @@ export function flattenSalesInvoiceLines(
         quantity,
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         unitPrice: Number(line.unitPrice ?? 0),
+        lineAmount: Number(
+          line.amount ??
+            line.lineAmountExclVAT ??
+            quantity * Number(line.unitPrice ?? 0),
+        ),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),
@@ -160,6 +251,11 @@ export function flattenSalesCrMemoLines(headers: CrMemoHeader[]): FlatCrMemoLine
         quantity,
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         unitPrice: Number(line.unitPrice ?? 0),
+        lineAmount: Number(
+          line.amount ??
+            line.lineAmountExclVAT ??
+            quantity * Number(line.unitPrice ?? 0),
+        ),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
         ),

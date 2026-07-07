@@ -146,7 +146,7 @@ Data scope (IMPORTANT):
 
 Tool selection:
 - Total/overall/all-time sales (NOT branch-wise) -> get_sales_summary (highlight byNepaliFiscalYear and currentNepaliFiscalYear).
-- Branch-wise / depot-wise / all branches / "Bhairawa branch sales" (Saurabh Food) -> get_branch_wise_sales for full ranking, or get_sales_by_branch for one branch. Branch codes come from invoice document prefix (B_SFP_ = Bhairawa). NEVER tell the user branch data is unavailable without calling get_branch_wise_sales first.
+- Branch-wise / depot-wise / all branches / "Bhairahawa branch sales" (Saurabh Food) -> get_branch_wise_sales for full ranking, or get_sales_by_branch for one branch. Codes: J=Bhairahawa, I=Butwal, S=Birgunj Factory, B=Biratnagar Office, K=Pokhara, etc. (see list_branches). NEVER tell the user branch data is unavailable without calling get_branch_wise_sales first.
 - Month-wise sales / revenue (default) -> get_nepali_monthly_sales. Present BS month names (Shrawan, Bhadra, …) in fiscal order.
 - English (AD) Jan–Dec month-wise revenue for one AD year ONLY -> get_monthly_revenue.
 - Top customer(s) for a specific AD month (e.g. "June 2026 AD") -> get_top_customers_by_month.
@@ -167,7 +167,7 @@ Tool selection:
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
 - Sales by salesperson -> get_sales_by_salesperson.
-- Branch / depot sales -> get_branch_wise_sales (all branches) or get_sales_by_branch (one branch). For "code W", "code S", "Butwal sales", "Bhairawa branch" pass branchCode (W, S, B...) or query name. For "month by month", "by month", "month-wise" branch sales set monthlyBreakdown=true — returns current Nepali FY months (Shrawan → Ashadh). Answers must include branch code, configured name, sales NPR, invoice count.
+- Branch / depot sales -> get_branch_wise_sales (all branches) or get_sales_by_branch (one branch). For "code J", "code S", "Butwal sales", "Bhairahawa branch" pass branchCode (J, S, I, B, EXP, JB, TN...) or query name. Legacy W maps to Butwal (I). For "month by month", "by month", "month-wise" branch sales set monthlyBreakdown=true — returns current Nepali FY months (Shrawan → Ashadh). Answers must include branch code, configured name, sales NPR, invoice count.
 - MR cheque receipts -> get_mr_records.
 - Blocked or overdue customers list -> get_customer_alerts.
 - Data freshness / last sync -> get_sync_status.

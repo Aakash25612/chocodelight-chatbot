@@ -67,8 +67,100 @@ function round(value: number): number {
 /**
  * All-time and segmented sales summary. Use this for "total sales" questions,
  * since the mirror spans multiple AD years and Nepali fiscal years.
+ * Prefers posted sales invoice/credit memo documents when synced (matches ledger).
  */
 export async function getSalesSummary(): Promise<unknown> {
+  const postedPayload = (await getMirror("postedSalesDocuments")) as MirrorPayload<{
+    documentNo?: string;
+    postingDate?: string;
+    branchCode?: string;
+    salesAmount?: number;
+    documentKind?: "invoice" | "credit_memo";
+  }>;
+
+  const usePostedDocuments =
+    !postedPayload.error &&
+    Array.isArray(postedPayload.value) &&
+    postedPayload.value.length > 0;
+
+  if (usePostedDocuments) {
+    let grossInvoiceSales = 0;
+    let creditMemoSales = 0;
+    let invoiceCount = 0;
+    let earliest: Date | null = null;
+    let latest: Date | null = null;
+
+    const byAdYear: Record<string, { sales: number; invoices: number }> = {};
+    const byFiscalYear: Record<string, { sales: number; invoices: number }> =
+      {};
+
+    for (const doc of postedPayload.value ?? []) {
+      const date = parseDate(doc.postingDate);
+      if (!date) continue;
+      if (!earliest || date < earliest) earliest = date;
+      if (!latest || date > latest) latest = date;
+
+      const amount = Number(doc.salesAmount ?? 0);
+      const isInvoice = doc.documentKind === "invoice";
+
+      if (isInvoice) {
+        grossInvoiceSales += amount;
+        invoiceCount += 1;
+
+        const adYear = String(date.getFullYear());
+        byAdYear[adYear] ??= { sales: 0, invoices: 0 };
+        byAdYear[adYear].sales += amount;
+        byAdYear[adYear].invoices += 1;
+
+        const fy = getNepaliFiscalYear(date);
+        if (fy) {
+          byFiscalYear[fy.label] ??= { sales: 0, invoices: 0 };
+          byFiscalYear[fy.label].sales += amount;
+          byFiscalYear[fy.label].invoices += 1;
+        }
+      } else {
+        creditMemoSales += amount;
+      }
+    }
+
+    const currentFy = getNepaliFiscalYear(new Date());
+    const currentFyLabel = currentFy?.label ?? null;
+
+    return {
+      currency: "NPR",
+      note: "Sales figures are net of tax from posted sales invoices (line.amount totals) minus credit memos. Profit is not included because COGS/cost data is not synced.",
+      allTime: {
+        grossInvoiceSales: round(grossInvoiceSales),
+        creditMemos: round(creditMemoSales),
+        netSales: round(grossInvoiceSales - Math.abs(creditMemoSales)),
+        invoiceCount,
+        dateRange: {
+          from: earliest?.toISOString().slice(0, 10) ?? null,
+          to: latest?.toISOString().slice(0, 10) ?? null,
+        },
+      },
+      currentNepaliFiscalYear: currentFyLabel
+        ? {
+            label: currentFyLabel,
+            sales: round(byFiscalYear[currentFyLabel]?.sales ?? 0),
+            invoices: byFiscalYear[currentFyLabel]?.invoices ?? 0,
+          }
+        : null,
+      byAdYear: Object.fromEntries(
+        Object.entries(byAdYear)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([year, v]) => [year, { sales: round(v.sales), invoices: v.invoices }]),
+      ),
+      byNepaliFiscalYear: Object.fromEntries(
+        Object.entries(byFiscalYear)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([fy, v]) => [fy, { sales: round(v.sales), invoices: v.invoices }]),
+      ),
+      _syncedAt: postedPayload._syncedAt,
+      _source: "posted_invoices",
+    };
+  }
+
   const payload = await loadLedger();
   if (payload.error) return { error: payload.error };
   const entries = payload.value ?? [];
@@ -144,6 +236,7 @@ export async function getSalesSummary(): Promise<unknown> {
         .map(([fy, v]) => [fy, { sales: round(v.sales), invoices: v.invoices }]),
     ),
     _syncedAt: payload._syncedAt,
+    _source: "customer_ledger",
   };
 }
 

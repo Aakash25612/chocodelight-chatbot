@@ -1432,7 +1432,7 @@ export async function getBranchWiseSales(
       currency: "NPR",
       period: period.label,
       basis:
-        "Posted customer-ledger invoices (salesLcy). Branch = document prefix before underscore.",
+        "Posted sales invoices (line.amount totals) minus credit memos. Branch = accountability center / document prefix.",
       totalSalesExcludingTax: cached.allTime.totalSales,
       branchCount: cached.allTime.branches.length,
       branches: cached.allTime.branches,
@@ -1502,7 +1502,7 @@ export async function getBranchWiseSales(
     period: period.label,
     calendar: input?.year || input?.month ? "AD" : "all_synced_periods",
     basis:
-      "Posted customer-ledger invoices (salesLcy). Branch = first letter of documentNo before underscore (e.g. B_SFP_...).",
+      "Posted customer-ledger invoices (salesLcy). Branch = document prefix before underscore (e.g. J_SFP_...).",
     totalSalesExcludingTax: totalSales,
     branchCount: rows.length,
     branches: rows,

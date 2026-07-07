@@ -222,15 +222,16 @@ async function formatReceivablesResponse(
 }
 
 function extractBranchCodeQuery(message: string): string | null {
+  const branchToken = "(exp|jb|tn|[a-z]{1,3})";
   const normalized = message.trim().toLowerCase();
   const patterns = [
-    /\b(?:code|branch|depo(?:t)?)\s*[:=]?\s*([a-z])\b/i,
-    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+by\s+month/i,
-    /\b(?:sales|total|revenue)\s+(?:of|for)?\s*(?:code|branch|depo(?:t)?)\s*([a-z])\b/i,
-    /\b(?:code|branch|depo(?:t)?)\s+([a-z])\s+(?:sales|total|revenue)\b/i,
-    /\b([a-z])\s+branch\s+(?:sales|total|revenue)?\b/i,
-    /\bbranch\s+([a-z])\b/i,
-    /\bfor\s+code\s+([a-z])\b/i,
+    new RegExp(`\\b(?:code|branch|depo(?:t)?)\\s*[:=]?\\s*(${branchToken})\\b`, "i"),
+    new RegExp(`\\b(?:code|branch|depo(?:t)?)\\s+(${branchToken})\\s+by\\s+month`, "i"),
+    new RegExp(`\\b(?:sales|total|revenue)\\s+(?:of|for)?\\s*(?:code|branch|depo(?:t)?)\\s*(${branchToken})\\b`, "i"),
+    new RegExp(`\\b(?:code|branch|depo(?:t)?)\\s+(${branchToken})\\s+(?:sales|total|revenue)\\b`, "i"),
+    new RegExp(`\\b(${branchToken})\\s+branch\\s+(?:sales|total|revenue)?\\b`, "i"),
+    new RegExp(`\\bbranch\\s+(${branchToken})\\b`, "i"),
+    new RegExp(`\\bfor\\s+code\\s+(${branchToken})\\b`, "i"),
   ];
   for (const pattern of patterns) {
     const match = normalized.match(pattern);

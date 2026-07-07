@@ -25,13 +25,47 @@ type LedgerEntry = {
 async function main() {
   const { runWithCompany } = await import("../src/lib/company-context");
   const { getMirror } = await import("../src/lib/bc-mirror");
-  const { buildBranchSalesCache, saveBranchSalesCache } = await import(
-    "../src/lib/branch-sales-cache"
-  );
+  const {
+    buildBranchSalesCache,
+    buildBranchSalesCacheFromDocuments,
+    saveBranchSalesCache,
+  } = await import("../src/lib/branch-sales-cache");
   const { listCompanies } = await import("../src/lib/companies");
 
   for (const config of listCompanies()) {
     await runWithCompany(config.key, async () => {
+      const posted = (await getMirror("postedSalesDocuments")) as {
+        value?: Array<{
+          documentNo?: string;
+          postingDate?: string;
+          branchCode?: string;
+          salesAmount?: number;
+          documentKind?: "invoice" | "credit_memo";
+        }>;
+        error?: string;
+      };
+
+      if (posted.value?.length) {
+        const cache = buildBranchSalesCacheFromDocuments(
+          posted.value.map((doc) => ({
+            documentNo: String(doc.documentNo ?? ""),
+            postingDate: String(doc.postingDate ?? ""),
+            branchCode: String(doc.branchCode ?? ""),
+            salesAmount: Number(doc.salesAmount ?? 0),
+            documentKind: doc.documentKind ?? "invoice",
+          })),
+        );
+        await saveBranchSalesCache(cache);
+        console.log(
+          config.key,
+          "branch cache (posted invoices):",
+          cache.allTime.branches.length,
+          "branches, total",
+          cache.allTime.totalSales,
+        );
+        return;
+      }
+
       const raw = (await getMirror("custLedgEntries")) as {
         value?: LedgerEntry[];
         error?: string;
@@ -44,7 +78,7 @@ async function main() {
       await saveBranchSalesCache(cache);
       console.log(
         config.key,
-        "branch cache:",
+        "branch cache (ledger fallback):",
         cache.allTime.branches.length,
         "branches, total",
         cache.allTime.totalSales,
