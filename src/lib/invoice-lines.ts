@@ -29,6 +29,7 @@ type InvoiceLine = {
   unitOfMeasureCode?: string;
   unitPrice?: number;
   amount?: number;
+  amountIncludingVAT?: number;
   lineAmountExclVAT?: number;
   postingDate?: string;
   sellToCustomerNo?: string;
@@ -47,6 +48,7 @@ type CrMemoLine = {
   unitOfMeasureCode?: string;
   unitPrice?: number;
   amount?: number;
+  amountIncludingVAT?: number;
   lineAmountExclVAT?: number;
   postingDate?: string;
   sellToCustomerNo?: string;
@@ -63,6 +65,7 @@ export type FlatInvoiceLine = {
   unitOfMeasureCode: string;
   unitPrice: number;
   lineAmountExclVAT: number;
+  lineAmountInclVAT: number;
   postingDate: string;
   sellToCustomerNo: string;
   itemCategoryCode: string;
@@ -80,6 +83,7 @@ export type FlatCrMemoLine = {
   unitOfMeasureCode: string;
   unitPrice: number;
   lineAmountExclVAT: number;
+  lineAmountInclVAT: number;
   postingDate: string;
   sellToCustomerNo: string;
   returnReasonCode: string;
@@ -115,6 +119,12 @@ export function flattenSalesInvoiceLines(
         unitPrice: Number(line.unitPrice ?? 0),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
+        ),
+        lineAmountInclVAT: Number(
+          line.amountIncludingVAT ??
+            line.lineAmountExclVAT ??
+            line.amount ??
+            quantity * Number(line.unitPrice ?? 0),
         ),
         postingDate: String(line.postingDate ?? header.postingDate ?? ""),
         sellToCustomerNo: String(
@@ -152,6 +162,12 @@ export function flattenSalesCrMemoLines(headers: CrMemoHeader[]): FlatCrMemoLine
         unitPrice: Number(line.unitPrice ?? 0),
         lineAmountExclVAT: Number(
           line.lineAmountExclVAT ?? line.amount ?? quantity * Number(line.unitPrice ?? 0),
+        ),
+        lineAmountInclVAT: Number(
+          line.amountIncludingVAT ??
+            line.lineAmountExclVAT ??
+            line.amount ??
+            quantity * Number(line.unitPrice ?? 0),
         ),
         postingDate: String(line.postingDate ?? header.postingDate ?? ""),
         sellToCustomerNo: String(

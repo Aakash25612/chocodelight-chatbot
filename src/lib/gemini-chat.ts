@@ -162,7 +162,7 @@ Tool selection:
 - How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
 - Search specific ledger rows (invoice no, type) -> search_ledger_entries. Do NOT dump get_customer_ledger_entries.
 - Product groups / list products by keyword -> search_items. Single item lookup -> get_item_detail.
-- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales with date filters. Choco Delight uses posted salesInvoiceLines (quantity + unitOfMeasureCode + lineAmountExclVAT) minus credit memos when synced. Category mix -> get_category_sales.
+- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item) -> get_product_sales with date filters. Choco Delight uses posted salesInvoiceLines (quantity, unitOfMeasureCode, lineAmountExclVAT, lineAmountInclVAT) minus credit memos when synced. Category mix -> get_category_sales.
 - What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.

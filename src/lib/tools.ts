@@ -281,7 +281,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales totals and averageUnitPrice from synced sales order lines. Use for product sales amount AND average selling price questions.",
+      "Get invoiced product sales totals from posted invoice lines (excl. and incl. VAT) or sales order lines. Use for product sales amount AND average selling price questions.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

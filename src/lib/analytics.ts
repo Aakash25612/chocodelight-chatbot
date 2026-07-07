@@ -742,6 +742,7 @@ type PostedInvoiceLine = {
   unitOfMeasureCode?: string;
   unitPrice?: number;
   lineAmountExclVAT?: number;
+  lineAmountInclVAT?: number;
   postingDate?: string;
   itemCategoryCode?: string;
 };
@@ -832,11 +833,13 @@ export async function getProductSales(
       unitOfMeasureCode: string;
       quantityInvoiced: number;
       salesExcludingTax: number;
+      salesIncludingTax: number;
       lineCount: number;
     }
   >();
 
   let totalSales = 0;
+  let totalSalesIncludingTax = 0;
   let totalQuantity = 0;
   let matchedLines = 0;
   let earliest: string | null = null;
@@ -845,7 +848,8 @@ export async function getProductSales(
   function addLine(inputLine: {
     itemNo: string;
     quantity: number;
-    sales: number;
+    salesExcl: number;
+    salesIncl: number;
     postingDate: string;
     unitOfMeasureCode?: string;
     category?: string;
@@ -854,7 +858,8 @@ export async function getProductSales(
 
     const meta = itemMeta.get(inputLine.itemNo);
     matchedLines += 1;
-    totalSales += inputLine.sales;
+    totalSales += inputLine.salesExcl;
+    totalSalesIncludingTax += inputLine.salesIncl;
     totalQuantity += inputLine.quantity;
     if (!earliest || inputLine.postingDate < earliest) {
       earliest = inputLine.postingDate;
@@ -872,10 +877,12 @@ export async function getProductSales(
         unitOfMeasureCode: inputLine.unitOfMeasureCode ?? "",
         quantityInvoiced: 0,
         salesExcludingTax: 0,
+        salesIncludingTax: 0,
         lineCount: 0,
       };
     agg.quantityInvoiced += inputLine.quantity;
-    agg.salesExcludingTax += inputLine.sales;
+    agg.salesExcludingTax += inputLine.salesExcl;
+    agg.salesIncludingTax += inputLine.salesIncl;
     agg.lineCount += 1;
     byItem.set(inputLine.itemNo, agg);
   }
@@ -886,10 +893,16 @@ export async function getProductSales(
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
 
+      const salesExcl = Number(line.lineAmountExclVAT ?? 0);
+      const salesIncl = Number(
+        line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? 0,
+      );
+
       addLine({
         itemNo,
         quantity,
-        sales: Number(line.lineAmountExclVAT ?? 0),
+        salesExcl,
+        salesIncl,
         postingDate: String(line.postingDate ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         category: String(line.itemCategoryCode ?? ""),
@@ -901,10 +914,16 @@ export async function getProductSales(
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
 
+      const salesExcl = Number(line.lineAmountExclVAT ?? 0);
+      const salesIncl = Number(
+        line.lineAmountInclVAT ?? line.lineAmountExclVAT ?? 0,
+      );
+
       addLine({
         itemNo,
         quantity: -quantity,
-        sales: -Number(line.lineAmountExclVAT ?? 0),
+        salesExcl: -salesExcl,
+        salesIncl: -salesIncl,
         postingDate: String(line.postingDate ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
       });
@@ -917,10 +936,12 @@ export async function getProductSales(
       const itemNo = String(line.itemNo ?? "");
       if (!itemNo || !matchesItem(itemNo)) continue;
 
+      const salesExcl = qtyInvoiced * Number(line.unitPrice ?? 0);
       addLine({
         itemNo,
         quantity: qtyInvoiced,
-        sales: qtyInvoiced * Number(line.unitPrice ?? 0),
+        salesExcl,
+        salesIncl: salesExcl,
         postingDate: orderDates.get(String(line.docNo ?? "")) ?? "",
       });
     }
@@ -931,9 +952,14 @@ export async function getProductSales(
       ...row,
       quantityInvoiced: round(row.quantityInvoiced),
       salesExcludingTax: round(row.salesExcludingTax),
+      salesIncludingTax: round(row.salesIncludingTax),
       averageUnitPrice:
         row.quantityInvoiced > 0
           ? round(row.salesExcludingTax / row.quantityInvoiced)
+          : 0,
+      averageUnitPriceInclTax:
+        row.quantityInvoiced > 0
+          ? round(row.salesIncludingTax / row.quantityInvoiced)
           : 0,
     }))
     .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
@@ -944,8 +970,8 @@ export async function getProductSales(
     period: period.label,
     itemNumbers: explicitItems.length ? explicitItems : null,
     basis: usePostedInvoices
-      ? "Posted sales invoice lines (lineAmountExclVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
-      : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates.",
+      ? "Posted sales invoice lines (lineAmountExclVAT, lineAmountInclVAT / amountIncludingVAT, quantity, unitOfMeasureCode) minus posted credit memo lines."
+      : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. VAT-inclusive amount not available on this fallback.",
     dataCoverage: {
       from: earliest,
       to: latest,
@@ -954,9 +980,12 @@ export async function getProductSales(
         : "Sales order line sync typically starts mid-2024. Run sync on Choco Delight for posted invoice lines.",
     },
     totalSalesExcludingTax: round(totalSales),
+    totalSalesIncludingTax: round(totalSalesIncludingTax),
     totalQuantityInvoiced: round(totalQuantity),
     averageUnitPrice:
       totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
+    averageUnitPriceInclTax:
+      totalQuantity > 0 ? round(totalSalesIncludingTax / totalQuantity) : 0,
     matchedLineCount: matchedLines,
     items,
     _syncedAt:

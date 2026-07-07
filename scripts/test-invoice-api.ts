@@ -39,6 +39,13 @@ async function main() {
     );
     if (invoiceLines[0]) {
       console.log("Sample invoice line:", invoiceLines[0]);
+      console.log(
+        "Sample VAT:",
+        "excl",
+        invoiceLines[0].lineAmountExclVAT,
+        "incl",
+        invoiceLines[0].lineAmountInclVAT,
+      );
     }
 
     console.log("Fetching salesCrMemos…");
