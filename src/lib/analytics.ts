@@ -133,8 +133,22 @@ export async function getSalesSummary(): Promise<unknown> {
           byFiscalYear[fy.label].invoices += 1;
         }
       } else {
-        creditMemoSalesIncl += amountIncl;
-        creditMemoSalesExcl += amountExcl;
+        const creditIncl = Math.abs(amountIncl);
+        const creditExcl = Math.abs(amountExcl);
+        creditMemoSalesIncl += creditIncl;
+        creditMemoSalesExcl += creditExcl;
+
+        const adYear = String(date.getFullYear());
+        byAdYear[adYear] ??= { salesIncl: 0, salesExcl: 0, invoices: 0 };
+        byAdYear[adYear].salesIncl -= creditIncl;
+        byAdYear[adYear].salesExcl -= creditExcl;
+
+        const fy = getNepaliFiscalYear(date);
+        if (fy) {
+          byFiscalYear[fy.label] ??= { salesIncl: 0, salesExcl: 0, invoices: 0 };
+          byFiscalYear[fy.label].salesIncl -= creditIncl;
+          byFiscalYear[fy.label].salesExcl -= creditExcl;
+        }
       }
     }
 
@@ -147,7 +161,7 @@ export async function getSalesSummary(): Promise<unknown> {
       currency: "NPR",
       displayNote:
         "Present netSalesIncludingTax and salesIncludingTax fields as primary amounts (Incl. VAT).",
-      note: "Sales from posted invoices. Incl. VAT uses amountIncludingVAT; excl. VAT uses line.amount (ledger basis). Profit is not included because COGS/cost data is not synced.",
+      note: "Sales from posted invoices minus credit memos. Incl. VAT uses amountIncludingVAT; excl. VAT uses line.amount (ledger basis). Profit is not included because COGS/cost data is not synced.",
       allTime: {
         grossInvoiceSalesIncludingTax: round(grossInvoiceSalesIncl),
         grossInvoiceSalesExcludingTax: round(grossInvoiceSalesExcl),
