@@ -571,6 +571,40 @@ export async function getReceivablesAging(
   );
   const matchingInvoiceCount = overdueEntries.length;
 
+  const topCustomersByMinDays = minDays
+    ? (() => {
+        const byCustomer = new Map<
+          string,
+          {
+            customerNo: string;
+            name: string;
+            outstanding: number;
+            invoiceCount: number;
+          }
+        >();
+        for (const entry of overdueEntries) {
+          const agg =
+            byCustomer.get(entry.customerNo) ??
+            {
+              customerNo: entry.customerNo,
+              name: entry.name,
+              outstanding: 0,
+              invoiceCount: 0,
+            };
+          agg.outstanding += entry.remaining;
+          agg.invoiceCount += 1;
+          byCustomer.set(entry.customerNo, agg);
+        }
+        return [...byCustomer.values()]
+          .map((row) => ({
+            ...row,
+            outstanding: round(row.outstanding),
+          }))
+          .sort((a, b) => b.outstanding - a.outstanding)
+          .slice(0, 15);
+      })()
+    : undefined;
+
   return {
     currency: "NPR",
     asOf: now.toISOString().slice(0, 10),
@@ -595,6 +629,9 @@ export async function getReceivablesAging(
     matchingOverdueTotal: matchingTotal,
     matchingInvoiceCount,
     overdueEntries: overdueEntries.slice(0, 50),
+    ...(topCustomersByMinDays
+      ? { topCustomersByMinDays }
+      : {}),
     topOverdueCustomers: filterCustomerNo
       ? topOverdueCustomers.filter((c) => c.customerNo === filterCustomerNo)
       : topOverdueCustomers,

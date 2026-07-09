@@ -234,14 +234,14 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_receivables_aging",
     description:
-      "Aging for open invoice balances. Default ageBy=due_date for overdue/past-due questions. Use ageBy=posting_date for 'outstanding above X days' / 'X days since invoice'. Pass query (customer name — partial match OK, e.g. 'Bhatbhateni Super Market') when user names one customer. Due-date buckets: Not due, 1-30, 31-60, 61-90, Over 90 days overdue. NOT for who owes the most total (use get_outstanding_receivables).",
+      "Aging for open invoice balances. Default ageBy=due_date for overdue/past-due questions. Use ageBy=posting_date for 'outstanding above/beyond X days'. Pass query ONLY for ONE named customer (partial name OK). Do NOT pass query for 'which customer most' — omit query and rank via topCustomersByMinDays. NOT for total balance ranking without day filter (use get_outstanding_receivables).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
         query: {
           type: SchemaType.STRING,
           description:
-            "Customer name search when user asks about one party. Partial match OK — do not require exact BC legal name.",
+            "ONE customer name only — partial match OK. Omit for 'which customer most' / ranking questions.",
         },
         customerNo: { type: SchemaType.STRING },
         minDaysOverdue: {

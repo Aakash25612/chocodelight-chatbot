@@ -92,17 +92,31 @@ function isReceivablesQuery(message: string): boolean {
 
 function parseMinDaysOverdue(message: string): number | undefined {
   const explicit = message.match(
-    /\b(?:above|over|more than|>=?)\s*(\d+)\s*days?\b/i,
+    /\b(?:above|over|more than|beyond|after|older than|>=?)\s*(\d+)\s*days?\b/i,
   );
   if (explicit) return Number(explicit[1]);
   if (/\b90\b/.test(message) && /\b(day|days)\b/i.test(message)) return 90;
   return undefined;
 }
 
+/** Questions asking who owes the most — not a single-customer lookup. */
+function isCustomerRankingReceivablesQuery(message: string): boolean {
+  const n = message.toLowerCase();
+  return (
+    /\b(which|what|who)\s+(customer|party|dealer|client|buyer)\b/.test(n) ||
+    /\b(customer|party|dealer)\s+(most|highest|top|maximum|max)\b/.test(n) ||
+    /\b(top|highest|maximum|biggest)\s+(customer|party|dealer|debtor)\b/.test(n) ||
+    /\bwho\s+owes?\s+(the\s+)?most\b/.test(n) ||
+    /\bmost\s+outstanding\b/.test(n)
+  );
+}
+
 /** Pull a customer name fragment from receivables questions (partial names OK). */
 function extractCustomerQueryFromReceivablesMessage(
   message: string,
 ): string | null {
+  if (isCustomerRankingReceivablesQuery(message)) return null;
+
   let text = message
     .replace(
       /\b(pending amount|outstanding amount|open balance|total outstanding)\b/gi,
@@ -112,8 +126,18 @@ function extractCustomerQueryFromReceivablesMessage(
       /\b(receivable|receivables|overdue|aging|past due|payment pending|dues)\b/gi,
       " ",
     )
-    .replace(/\b(above|over|more than|>=?)\s*\d+\s*days?\b/gi, " ")
+    .replace(
+      /\b(above|over|more than|beyond|after|older than|>=?)\s*\d+\s*days?\b/gi,
+      " ",
+    )
     .replace(/\b\d+\s*days?\s+(overdue|pending|due|old)\b/gi, " ")
+    .replace(
+      /\b(which|what|who)\s+(customer|party|dealer|client|buyer)\b.*$/gi,
+      " ",
+    )
+    .replace(/\b(customer|party)\s+(most|highest|top|maximum)\b.*$/gi, " ")
+    .replace(/\b(top|highest)\s+(customer|party)\b.*$/gi, " ")
+    .replace(/\bwho\s+owes?\s+(the\s+)?most\b.*$/gi, " ")
     .replace(/\b(of|for|from)\b/gi, " ")
     .replace(/\b(amount|balance|total|pending)\b/gi, " ")
     .replace(/\s+/g, " ")
@@ -168,6 +192,12 @@ async function formatReceivablesResponse(
       daysPastDue?: number;
       remaining: number;
     }>;
+    topCustomersByMinDays?: Array<{
+      customerNo: string;
+      name: string;
+      outstanding: number;
+      invoiceCount: number;
+    }>;
     buckets?: Array<{ bucket: string; count: number; amount: number }>;
     _syncedAt?: string;
   };
@@ -214,7 +244,6 @@ async function formatReceivablesResponse(
         (await getReceivablesAging({
           minDays,
           ageBy: "due_date",
-          ...(customerQuery ? { query: customerQuery } : {}),
           ...(data.customer?.customerNo
             ? { customerNo: data.customer.customerNo }
             : {}),
@@ -223,6 +252,22 @@ async function formatReceivablesResponse(
       lines.push(
         "",
         `Note: By **payment due date** (overdue only), the same filter is **${formatAmount(dueDateTotal)}** — lower because many old invoices are still within payment terms.`,
+      );
+    }
+
+    const showCustomerRanking =
+      isCustomerRankingReceivablesQuery(message) || !customerQuery;
+    const topCustomers = data.topCustomersByMinDays ?? [];
+    if (showCustomerRanking && topCustomers.length > 0 && !data.customer) {
+      lines.push(
+        "",
+        `### Top customers (outstanding ≥ ${minDays} days)`,
+        "",
+        "| Rank | Customer | Outstanding (NPR) | Invoices |",
+        "|---:|---|---:|---:|",
+        ...topCustomers.slice(0, 10).map((row, index) =>
+          `| ${index + 1} | ${escapeCell(row.name || row.customerNo)} | **${formatAmount(row.outstanding)}** | ${row.invoiceCount} |`,
+        ),
       );
     }
 
