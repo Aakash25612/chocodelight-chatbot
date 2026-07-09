@@ -5,6 +5,7 @@ import { getSalesByBranch, getBranchWiseSales } from "./analytics-queries";
 import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
+import { getMirror } from "./bc-mirror";
 
 type Customer = {
   number?: string;
@@ -20,6 +21,10 @@ type CustomerLedgerEntry = {
   postingDate?: string;
   salesLcy?: number;
   amountLcy?: number;
+  remainingAmount?: number;
+  open?: boolean;
+  customerNo?: string;
+  sellToCustomerNo?: string;
 };
 
 type MirrorPayload<T> = {
@@ -159,6 +164,37 @@ function resolveReceivablesAgeBy(message: string): "due_date" | "posting_date" {
   return "posting_date";
 }
 
+async function getSignedOutstandingSummary(): Promise<
+  | {
+      totalOutstandingSigned: number;
+      byDocumentType: Array<{ documentType: string; amount: number }>;
+      _syncedAt?: string;
+    }
+  | { error: string }
+> {
+  const payload = (await getMirror("custLedgEntries")) as MirrorPayload<CustomerLedgerEntry>;
+  if (payload.error) return { error: payload.error };
+  const entries = payload.value ?? [];
+
+  const byType = new Map<string, number>();
+  let total = 0;
+  for (const entry of entries) {
+    const amount = Number(entry.amountLcy ?? 0);
+    total += amount;
+    const key = String(entry.documentType ?? "(blank)");
+    byType.set(key, (byType.get(key) ?? 0) + amount);
+  }
+
+  return {
+    totalOutstandingSigned: total,
+    byDocumentType: [...byType.entries()]
+      .map(([documentType, amount]) => ({ documentType, amount }))
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+      .slice(0, 6),
+    _syncedAt: payload._syncedAt,
+  };
+}
+
 async function formatReceivablesResponse(
   message: string,
   normalized: string,
@@ -166,6 +202,32 @@ async function formatReceivablesResponse(
   const minDays = parseMinDaysOverdue(normalized);
   const ageBy = resolveReceivablesAgeBy(normalized);
   const customerQuery = extractCustomerQueryFromReceivablesMessage(message);
+  const asksTotalOutstandingOnly =
+    !minDays &&
+    !customerQuery &&
+    /\btotal\s+outstanding\b/.test(normalized);
+
+  if (asksTotalOutstandingOnly) {
+    const signed = await getSignedOutstandingSummary();
+    if ("error" in signed) return signed.error;
+    const companyLabel = getCompany(getActiveCompany()).displayName;
+    return [
+      `**Outstanding receivables (signed amountLcy)** — ${companyLabel}${formatSync(signed._syncedAt)}`,
+      "",
+      `| Metric | Amount (NPR) |`,
+      `|---|---:|`,
+      `| Total outstanding (sum of amountLcy with + and -) | **${formatAmount(signed.totalOutstandingSigned)}** |`,
+      "",
+      "### By document type (signed)",
+      "",
+      "| Document Type | Amount (NPR) |",
+      "|---|---:|",
+      ...signed.byDocumentType.map((row) =>
+        `| ${escapeCell(row.documentType)} | ${formatAmount(row.amount)} |`,
+      ),
+    ].join("\n");
+  }
+
   const data = (await getReceivablesAging({
     minDays,
     ageBy,
