@@ -54,13 +54,26 @@ const WELCOME = welcomeFor(DEFAULT_COMPANY);
 
 const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
-const SUGGESTIONS = [
-  "Branch wise sales",
-  "Code W sales",
-  "List all customers",
-  "What is month-wise sales this year?",
-  "Show available items",
-];
+const SUGGESTIONS_BY_COMPANY: Record<CompanyKey, string[]> = {
+  chocodelight: [
+    "Branch wise sales",
+    "Code W sales",
+    "List all customers",
+    "What is month-wise sales this year?",
+    "Show available items",
+  ],
+  saurabhfood: [
+    "Branch wise sales",
+    "Code J Bhairahawa sales",
+    "Mustard oil sales this year",
+    "Pending amount of Bhatbhateni above 90 days",
+    "Total sales this year",
+  ],
+};
+
+function suggestionsFor(key: CompanyKey): string[] {
+  return SUGGESTIONS_BY_COMPANY[key] ?? SUGGESTIONS_BY_COMPANY.chocodelight;
+}
 
 function createId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
@@ -550,10 +563,11 @@ export default function ChatInterface() {
           </div>
         </div>
 
-        {messages.length === 1 && messages[0].content === WELCOME && (
+        {messages.length === 1 &&
+          messages[0].content === welcomeFor(company) && (
           <div className="shrink-0 px-3 pb-2 sm:px-4">
             <div className="mx-auto flex max-w-4xl flex-wrap gap-2 pb-1 sm:flex-nowrap sm:overflow-x-auto">
-              {SUGGESTIONS.map((suggestion) => (
+              {suggestionsFor(company).map((suggestion) => (
                 <button
                   key={suggestion}
                   type="button"
