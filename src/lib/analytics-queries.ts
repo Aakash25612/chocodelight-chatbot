@@ -2292,7 +2292,7 @@ export async function getBranchWiseSales(
       currency: "NPR",
       period: period.label,
       displayNote:
-        "Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
+        "ALWAYS present branchName as the primary label (human-readable depot/factory name). Never list only branch codes. Code may appear in parentheses. Present totalSalesIncludingTax and salesIncludingTax as primary amounts (Incl. VAT).",
       basis:
         "Posted sales invoices (amountIncludingVAT) minus credit memos. Branch = accountability center / document prefix.",
       totalSalesIncludingTax:
