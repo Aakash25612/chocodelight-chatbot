@@ -59,11 +59,12 @@ const mirrorOnly = "Requires Supabase mirror mode (BC_DATA_SOURCE=supabase).";
 const periodToolProperties = {
   year: {
     type: SchemaType.NUMBER,
-    description: "AD calendar year filter.",
+    description:
+      "AD calendar year ONLY when user explicitly asks English/Gregorian/AD (e.g. '2026 AD'). Do NOT use for 'this year' in Nepal — use fiscalYearStart instead.",
   },
   month: {
     type: SchemaType.NUMBER,
-    description: "AD month 1-12 (use with year for June: month=6).",
+    description: "AD month 1-12 (use with year for June: month=6). Only for explicit AD months.",
   },
   week: {
     type: SchemaType.NUMBER,
@@ -87,7 +88,8 @@ const periodToolProperties = {
   },
   fiscalYearStart: {
     type: SchemaType.NUMBER,
-    description: "BS fiscal year start at Shrawan, e.g. 2082.",
+    description:
+      "DEFAULT period for Nepal: BS year when FY starts at Shrawan, e.g. 2082 for FY 2082/83. Use for 'this year' / YTD.",
   },
 } as const;
 
@@ -103,6 +105,29 @@ function periodArgs(args: Record<string, unknown>): DatePeriodInput {
     fiscalYearStart:
       typeof args.fiscalYearStart === "number" ? args.fiscalYearStart : undefined,
   };
+}
+
+/** Prefer Nepali FY over a bare AD year (e.g. model wrongly passes year=2026 for "this year"). */
+function nepaliPreferredPeriodArgs(
+  args: Record<string, unknown>,
+): DatePeriodInput {
+  const period = periodArgs(args);
+  const hasAdOnlyYear =
+    typeof period.year === "number" &&
+    period.year >= 2000 &&
+    period.month == null &&
+    period.week == null &&
+    period.day == null &&
+    !period.dateFrom &&
+    !period.dateTo &&
+    !period.nepaliMonth &&
+    period.fiscalYearStart == null;
+
+  // Drop bare AD year so tools default to current Nepali FY (2082/83), not calendar 2026.
+  if (hasAdOnlyYear) {
+    return {};
+  }
+  return period;
 }
 
 export const toolDeclarations: FunctionDeclaration[] = [
@@ -560,7 +585,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_by_salesperson",
     description:
-      "Posted invoice sales ranked by salesperson code/name. Primary: salesIncludingTax (Incl. VAT). Use ONLY for field team / salesperson / salesman performance — NOT for area-wise, region-wise, or branch-wise sales (use get_branch_wise_sales for those).",
+      "Posted invoice sales ranked by salesperson code/name. Defaults to current Nepali FY (e.g. 2082/83). Pass fiscalYearStart for a BS FY — NEVER pass AD year like 2026 unless user explicitly asks for English/AD calendar. Primary: salesIncludingTax (Incl. VAT). Use ONLY for field team / salesperson / salesman performance — NOT for area-wise, region-wise, or branch-wise sales (use get_branch_wise_sales for those).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -1162,7 +1187,7 @@ export async function executeTool(
         if (!useSupabaseMirror) return { error: mirrorOnly };
         result = await getSalesBySalesperson({
           limit: typeof args.limit === "number" ? args.limit : undefined,
-          ...periodArgs(args),
+          ...nepaliPreferredPeriodArgs(args),
         });
         break;
       case "list_branches":

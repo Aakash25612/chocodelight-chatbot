@@ -23,7 +23,7 @@ import {
   FISCAL_MONTH_ORDER,
   type BranchMonthRow,
 } from "./branch-sales-cache";
-import { type DatePeriodInput, periodFromInput } from "./date-period";
+import { type DatePeriodInput, periodFromInput, withDefaultNepaliFiscalYear } from "./date-period";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1777,12 +1777,13 @@ export async function getCustomerProductSales(
   };
 }
 
-/** Posted invoice sales grouped by salesperson code. */
+/** Posted invoice sales grouped by salesperson code. Defaults to current Nepali FY. */
 export async function getSalesBySalesperson(
   input?: { limit?: number } & DatePeriodInput,
 ): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 20, 50);
-  const periodResult = periodFromInput(input);
+  const periodInput = withDefaultNepaliFiscalYear(input);
+  const periodResult = periodFromInput(periodInput);
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
@@ -1845,8 +1846,11 @@ export async function getSalesBySalesperson(
 
     return {
       currency: "NPR",
+      calendar: "Bikram Sambat",
       period: period.label,
-      displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+      fiscalYearStart: periodInput.fiscalYearStart ?? null,
+      displayNote:
+        'Present period as Nepali FY (e.g. "2082/83"), never as AD year 2026 unless the user asked for AD. Primary: salesIncludingTax (Incl. VAT).',
       basis:
         "Posted sales invoice lines grouped by header salespersonCode (amountIncludingVAT) minus credit memos.",
       totalSalesIncludingTax: round(totalIncl),

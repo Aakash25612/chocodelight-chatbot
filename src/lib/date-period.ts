@@ -1,4 +1,4 @@
-import { BS_MONTHS, getNepaliFiscalYear, toBs } from "./nepali-date";
+import { BS_MONTHS, getCurrentFiscalYearStart, getNepaliFiscalYear, toBs } from "./nepali-date";
 
 /** Flexible AD / BS date filtering for analytics tools. */
 export type DatePeriodInput = {
@@ -169,4 +169,36 @@ export function periodFromInput(input?: DatePeriodInput): {
   const resolved = resolveDatePeriod(input);
   if ("error" in resolved) return resolved;
   return { period: resolved };
+}
+
+/**
+ * Prefer current Nepali FY when the caller passed no period, or only a bare AD year
+ * (models often pass year=2026 for "this year" — that must become FY 2082/83).
+ */
+export function withDefaultNepaliFiscalYear(
+  input?: DatePeriodInput,
+): DatePeriodInput {
+  const hasSpecificFilter = Boolean(
+    input?.month ||
+      input?.week ||
+      input?.day ||
+      input?.dateFrom ||
+      input?.dateTo ||
+      input?.nepaliMonth ||
+      input?.fiscalYearStart,
+  );
+  if (hasSpecificFilter) return input ?? {};
+
+  const bareAdYear =
+    typeof input?.year === "number" &&
+    input.year >= 2000 &&
+    input.year <= 2035;
+
+  if (!input?.year || bareAdYear) {
+    const fyStart = getCurrentFiscalYearStart();
+    if (!fyStart) return input ?? {};
+    return { fiscalYearStart: fyStart };
+  }
+
+  return input ?? {};
 }
