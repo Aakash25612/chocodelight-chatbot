@@ -252,6 +252,10 @@ export function buildBranchSalesCacheFromDocuments(
   documents: PostedSalesDocument[],
 ): BranchSalesCache {
   const entries = documents.map((doc) => {
+    // Re-derive from documentNo so registry changes (e.g. W = Balkot) apply
+    // even when stored branchCode was written under an older mapping.
+    const branchCode =
+      branchCodeFromDocument(doc.documentNo) ?? doc.branchCode;
     const incl =
       doc.documentKind === "credit_memo"
         ? -Math.abs(doc.salesAmountIncludingTax)
@@ -261,7 +265,7 @@ export function buildBranchSalesCacheFromDocuments(
         ? -Math.abs(doc.salesAmount)
         : doc.salesAmount;
     return {
-      branchCode: doc.branchCode,
+      branchCode,
       postingDate: doc.postingDate,
       salesIncl: incl,
       salesExcl: excl,

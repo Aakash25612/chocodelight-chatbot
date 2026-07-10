@@ -137,16 +137,15 @@ const SAURABHFOOD_BRANCHES: BranchDefinition[] = [
     name: "JutePress Godown",
     aliases: ["jute press", "jutepress"],
   },
-];
-
-/** Historical BC document prefix still present on older Saurabh invoices. */
-const SAURABHFOOD_LEGACY_CODES: BranchDefinition[] = [
   {
     code: "W",
-    name: "Butwal Sales Depot (legacy W)",
-    aliases: [],
+    name: "Balkot",
+    aliases: ["balkot", "balkot depot"],
   },
 ];
+
+/** Historical BC document prefixes still present on older invoices (kept for lookup only). */
+const SAURABHFOOD_LEGACY_CODES: BranchDefinition[] = [];
 
 const CHOCODELIGHT_BRANCHES: BranchDefinition[] = [
   {
@@ -166,10 +165,10 @@ const BRANCHES: Record<CompanyKey, BranchDefinition[]> = {
   saurabhfood: SAURABHFOOD_BRANCHES,
 };
 
-/** Map legacy document prefixes to current accountability codes. */
+/** Map legacy document prefixes to current accountability codes (if any). */
 const LEGACY_BRANCH_CODE_MAP: Partial<Record<CompanyKey, Record<string, string>>> =
   {
-    saurabhfood: { W: "I" },
+    saurabhfood: {},
   };
 
 export function listBranchDefinitions(
