@@ -146,10 +146,10 @@ Data scope (IMPORTANT):
 
 Tool selection:
 - Total/overall/all-time sales (NOT branch-wise) -> get_sales_summary (highlight netSalesIncludingTax, byNepaliFiscalYear.salesIncludingTax, and currentNepaliFiscalYear.salesIncludingTax).
-- Branch-wise / depot-wise / all branches / "Bhairahawa branch sales" (Saurabh Food) -> get_branch_wise_sales for full ranking, or get_sales_by_branch for one branch. ALWAYS present branchName as the primary label (e.g. "Birgunj Factory", "Butwal Sales Depot") — never list only codes A/B/S/T. Code may appear in parentheses after the name. NEVER tell the user branch data is unavailable without calling get_branch_wise_sales first.
+- Branch-wise / area-wise / region-wise / depot-wise / all branches / "Bhairahawa branch sales" (Saurabh Food) -> get_branch_wise_sales for full ranking, or get_sales_by_branch for one branch. "Area wise sales" means BRANCH/DEPOT sales (Kathmandu, Birgunj, Butwal…), NOT salesperson. ALWAYS present branchName as the primary label (e.g. "Birgunj Factory", "Butwal Sales Depot") — never list only codes A/B/S/T. Code may appear in parentheses after the name. NEVER tell the user branch data is unavailable without calling get_branch_wise_sales first.
 - Month-wise sales / revenue (default) -> get_nepali_monthly_sales. Present salesIncludingTax per BS month and yearToDate.salesIncludingTax (Incl. VAT).
 - One customer's total sales -> get_customer_sales with query/customerNo; pass fiscalYearStart for Nepali FY and byNepaliMonth breakdown.
-- Sales by salesperson / field team -> get_sales_by_salesperson (Incl. VAT from posted invoices).
+- Sales by salesperson / field team / "by salesman" -> get_sales_by_salesperson (Incl. VAT from posted invoices). Do NOT use this for area/region/branch questions.
 - Branch + product e.g. "code J dip sales month by month" -> get_branch_product_sales with branchCode, productQuery, monthlyBreakdown=true.
 - VAT collected this year / by branch -> get_vat_report (totalVatCollected, byBranch, byNepaliMonth).
 - English (AD) Jan–Dec month-wise revenue for one AD year ONLY -> get_monthly_revenue.
@@ -171,8 +171,8 @@ Tool selection:
 - What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
-- Sales by salesperson -> get_sales_by_salesperson (posted invoices, Incl. VAT).
-- Branch / depot sales -> get_branch_wise_sales (all branches) or get_sales_by_branch (one branch). For "code J", "code S", "Butwal sales", "Bhairahawa branch" pass branchCode (J, S, I, B, EXP, JB, TN...) or query name. Legacy W maps to Butwal (I). For "month by month", "by month", "month-wise" branch sales set monthlyBreakdown=true — returns current Nepali FY months (Shrawan → Ashadh). Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Answers MUST lead with branchName (human-readable depot/factory name); put code only as secondary. Never answer with a code-only list like A, B, S, T.
+- Sales by salesperson -> get_sales_by_salesperson (posted invoices, Incl. VAT). Never use for "area wise" / "region wise".
+- Branch / area / region / depot sales -> get_branch_wise_sales (all branches) or get_sales_by_branch (one branch). "Area wise sales" = branch/depot ranking by name. For "code J", "code S", "Butwal sales", "Bhairahawa branch" pass branchCode (J, S, I, B, EXP, JB, TN...) or query name. Legacy W maps to Butwal (I). For "month by month", "by month", "month-wise" branch sales set monthlyBreakdown=true — returns current Nepali FY months (Shrawan → Ashadh). Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Answers MUST lead with branchName (human-readable depot/factory name); put code only as secondary. Never answer with a code-only list like A, B, S, T.
 - MR cheque receipts -> get_mr_records.
 - Blocked or overdue customers list -> get_customer_alerts.
 - Data freshness / last sync -> get_sync_status.

@@ -407,7 +407,17 @@ function extractBranchCodeQuery(message: string): string | null {
 }
 
 function isBranchWiseSalesQuery(message: string): boolean {
-  return /\bbranch\s*wise\b/.test(message) || /\bbranch-wise\b/.test(message);
+  return (
+    /\bbranch\s*wise\b/.test(message) ||
+    /\bbranch-wise\b/.test(message) ||
+    /\barea\s*wise\b/.test(message) ||
+    /\barea-wise\b/.test(message) ||
+    /\bregion\s*wise\b/.test(message) ||
+    /\bregion-wise\b/.test(message) ||
+    /\bdepot\s*wise\b/.test(message) ||
+    /\bdepot-wise\b/.test(message) ||
+    /\bsales\s+by\s+(area|region|branch|depot)\b/.test(message)
+  );
 }
 
 function wantsMonthlyBreakdown(message: string): boolean {
@@ -532,7 +542,7 @@ async function formatBranchWiseSales(): Promise<string> {
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
   const lines = [
-    `**Branch-wise sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    `**Branch / area-wise sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     "### All synced invoice sales",
     "",

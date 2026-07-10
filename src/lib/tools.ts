@@ -519,7 +519,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_branch_wise_sales",
     description:
-      "MANDATORY for 'branch wise sales', 'sales by branch', 'all branches', or depot-wise sales. Present branchName as the primary label (e.g. Birgunj Factory, Butwal Sales Depot) — NEVER list only codes A/B/S/T. Code may appear after the name. Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
+      "MANDATORY for 'branch wise sales', 'area wise sales', 'region wise sales', 'sales by branch/area/depot', 'all branches', or depot-wise sales. Area-wise = branch/depot (Kathmandu, Birgunj…), NOT salesperson. Present branchName as the primary label (e.g. Birgunj Factory, Butwal Sales Depot) — NEVER list only codes A/B/S/T. Code may appear after the name. Present salesIncludingTax / totalSalesIncludingTax (Incl. VAT) as primary amounts. Includes current Nepali fiscal year breakdown when no period filter is passed. NEVER say branch data is unavailable — call this tool.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -560,7 +560,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_sales_by_salesperson",
     description:
-      "Posted invoice sales ranked by salesperson code. Primary: salesIncludingTax (Incl. VAT). Use for field team / salesperson performance.",
+      "Posted invoice sales ranked by salesperson code/name. Primary: salesIncludingTax (Incl. VAT). Use ONLY for field team / salesperson / salesman performance — NOT for area-wise, region-wise, or branch-wise sales (use get_branch_wise_sales for those).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
