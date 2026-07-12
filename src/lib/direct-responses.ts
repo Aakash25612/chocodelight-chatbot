@@ -91,6 +91,7 @@ function extractBranchFromMessage(message: string): string | null {
 
 function isPendingSaudaQuery(message: string): boolean {
   return (
+    /\bsauda\b/.test(message) ||
     /\bpending\s+sauda\b/.test(message) ||
     /\bsauda\s+pending\b/.test(message) ||
     /\bunshipped\b/.test(message) ||
@@ -100,15 +101,49 @@ function isPendingSaudaQuery(message: string): boolean {
   );
 }
 
+/** Pull customer / party name from "X pending sauda" style questions. */
+function extractCustomerQueryFromSaudaMessage(message: string): string | null {
+  let text = message
+    .replace(/\b(tell|show|give|get|list|check|what(?:'s| is)?|his|her|their|the)\b/gi, " ")
+    .replace(/\b(pending\s+sauda|sauda\s+pending|pending\s+(sales\s+)?orders?|unshipped)\b/gi, " ")
+    .replace(/\bsauda\b/gi, " ")
+    .replace(/\b(of|for|from|about)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text || text.length < 3) return null;
+  if (/^(all|every|total|company|customers?)$/i.test(text)) return null;
+  return text;
+}
+
 async function formatPendingSauda(message: string): Promise<string> {
-  const branch = resolveBranch({ query: message });
-  const branchCode = "error" in branch ? undefined : branch.code;
+  const customerQuery = extractCustomerQueryFromSaudaMessage(message);
+  const branch = !customerQuery
+    ? resolveBranch({ query: message })
+    : resolveBranch({ query: customerQuery });
+  const branchCode =
+    !customerQuery && !("error" in branch) ? branch.code : undefined;
+  // Prefer customer name when present; only use branch if no customer fragment.
+  const useBranch =
+    !customerQuery && branchCode
+      ? { branchCode }
+      : customerQuery
+        ? { query: customerQuery }
+        : branchCode
+          ? { branchCode }
+          : {};
 
   const data = (await getPendingSauda({
-    ...(branchCode ? { branchCode } : {}),
-    limit: 25,
+    ...useBranch,
+    limit: 40,
   })) as {
     error?: string;
+    candidates?: Array<{ customerNo?: string; name?: string }>;
+    filter?: {
+      customerNo?: string | null;
+      customerName?: string | null;
+      branchCode?: string | null;
+    };
     summary?: {
       ordersWithPending?: number;
       pendingLineCount?: number;
@@ -130,23 +165,57 @@ async function formatPendingSauda(message: string): Promise<string> {
     }>;
     lines?: Array<{
       orderNo: string;
+      postingDate?: string;
       customerName: string;
       itemName: string;
       itemNo: string;
       pendingQuantity: number;
       quantity: number;
       quantityShipped: number;
+      unitPrice?: number;
       pendingAmount: number;
+      branchName?: string;
     }>;
     _syncedAt?: string;
   };
 
-  if (data.error) return data.error;
+  if (data.error) {
+    if (data.candidates?.length) {
+      return [
+        data.error,
+        "",
+        "| Customer No. | Name |",
+        "|---|---|",
+        ...data.candidates.map(
+          (c) => `| ${c.customerNo ?? ""} | ${escapeCell(c.name ?? "")} |`,
+        ),
+      ].join("\n");
+    }
+    return data.error;
+  }
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
   const s = data.summary ?? {};
+  const who =
+    data.filter?.customerName ||
+    data.filter?.customerNo ||
+    (data.filter?.branchCode ? `branch ${data.filter.branchCode}` : null);
+  const title = who
+    ? `**Pending Sauda — ${who}**`
+    : `**Pending Sauda (Locked orders, unshipped qty)**`;
+
+  if ((s.ordersWithPending ?? 0) === 0) {
+    return [
+      `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
+      "",
+      "No Locked sales orders with unshipped quantity (`quantity − quantityShipped > 0`) found for this filter.",
+      "",
+      "Pending Sauda is **not** outstanding receivables / open invoice balance.",
+    ].join("\n");
+  }
+
   const lines = [
-    `**Pending Sauda (Locked orders, unshipped qty)** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     "| Metric | Value |",
     "|---|---:|",
@@ -156,6 +225,7 @@ async function formatPendingSauda(message: string): Promise<string> {
     `| Total pending amount | **${formatAmount(s.totalPendingAmount ?? 0)}** |`,
     "",
     "Rule: `orderStatus = Locked` and `quantity − quantityShipped > 0`. Amount = pending qty × unit price.",
+    "This is **not** customer outstanding / receivable balance.",
   ];
 
   if (data.topItems?.length) {
@@ -172,7 +242,7 @@ async function formatPendingSauda(message: string): Promise<string> {
     );
   }
 
-  if (data.topCustomers?.length) {
+  if (!data.filter?.customerNo && data.topCustomers?.length) {
     lines.push(
       "",
       "### Top customers",
@@ -191,11 +261,11 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Detail lines",
       "",
-      "| Order | Customer | Item | Ordered | Shipped | Pending | Amount |",
-      "|---|---|---|---:|---:|---:|---:|",
-      ...data.lines.slice(0, 15).map(
+      "| Order | Date | Customer | Item | Ordered | Shipped | Pending | Amount |",
+      "|---|---|---|---|---:|---:|---:|---:|",
+      ...data.lines.slice(0, 25).map(
         (row) =>
-          `| ${escapeCell(row.orderNo)} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.quantity)} | ${formatAmount(row.quantityShipped)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.quantity)} | ${formatAmount(row.quantityShipped)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }
@@ -204,6 +274,9 @@ async function formatPendingSauda(message: string): Promise<string> {
 }
 
 function isReceivablesQuery(message: string): boolean {
+  // "sauda" = unshipped locked sales orders, never receivables.
+  if (isPendingSaudaQuery(message)) return false;
+
   return (
     /\b(outstanding|receivable|receivables|overdue|aging|past due|payment pending|dues)\b/.test(
       message,
