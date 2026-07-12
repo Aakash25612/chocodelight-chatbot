@@ -1535,14 +1535,28 @@ export async function getPendingSauda(input?: {
     if ("error" in branch) return branch;
     branchCode = branch.code;
   } else if (input?.query?.trim() && !customerNo) {
-    const branch = resolveBranch({ query: input.query });
-    if (!("error" in branch)) {
-      branchCode = branch.code;
-    } else {
-      const resolved = await resolveCustomerNo({ query: input.query });
-      if ("error" in resolved) return resolved;
-      customerNo = resolved.customerNo;
-      customerName = resolved.name;
+    const q = input.query.trim();
+    const looksLikeBranchCode = /^[A-Za-z]{1,3}$/.test(q) || /^(?:code|branch)\s+/i.test(q);
+    if (looksLikeBranchCode) {
+      const branch = resolveBranch({ query: q });
+      if (!("error" in branch)) {
+        branchCode = branch.code;
+      }
+    }
+    if (!branchCode) {
+      const resolved = await resolveCustomerNo({ query: q });
+      if ("error" in resolved) {
+        // Fallback: allow full branch names like "Bhairahawa Sales Depot"
+        const branch = resolveBranch({ query: q });
+        if (!("error" in branch)) {
+          branchCode = branch.code;
+        } else {
+          return resolved;
+        }
+      } else {
+        customerNo = resolved.customerNo;
+        customerName = resolved.name;
+      }
     }
   } else if (customerNo) {
     const resolved = await resolveCustomerNo({ customerNo });

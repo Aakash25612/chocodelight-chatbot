@@ -263,11 +263,15 @@ function normalizeTerm(value: string): string {
 
 function termMatchesQuery(term: string, query: string): boolean {
   if (!term) return false;
+  // Single-letter / short codes must NOT match inside names like "P. Ltd."
   if (term.length <= 2) {
-    return new RegExp(
-      `\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
-      "i",
-    ).test(query);
+    return (
+      query === term ||
+      new RegExp(
+        `^(?:code|branch)\\s+${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+        "i",
+      ).test(query)
+    );
   }
   return term.includes(query) || query.includes(term);
 }
