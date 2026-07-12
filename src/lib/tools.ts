@@ -43,6 +43,7 @@ import {
   getVatReport,
   listBranches,
   getSalesOrdersSummary,
+  getPendingSauda,
   getSyncStatus,
   getTopCustomers,
   getTopCustomersByMonth,
@@ -505,6 +506,33 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description: "Locked or Unlocked.",
         },
         ...periodToolProperties,
+      },
+    },
+  },
+  {
+    name: "get_pending_sauda",
+    description:
+      "Pending Sauda / pending sales orders: Locked orders where quantity − quantityShipped > 0. Returns pending quantity, amount (qty×unitPrice), item name, customer, and order no. Use for 'pending sauda', 'pending order', 'locked order not shipped', 'unshipped quantity'. Optional filters: customer, branch, product keyword.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Customer name or branch name.",
+        },
+        customerNo: { type: SchemaType.STRING },
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Branch/accountability code filter, e.g. W, J, S.",
+        },
+        productQuery: {
+          type: SchemaType.STRING,
+          description: "Optional item keyword, e.g. dip, mustard.",
+        },
+        limit: {
+          type: SchemaType.NUMBER,
+          description: "Max detail lines to return (default 40).",
+        },
       },
     },
   },
@@ -1161,6 +1189,16 @@ export async function executeTool(
           query: args.query as string | undefined,
           status: args.status as string | undefined,
           ...periodArgs(args),
+        });
+        break;
+      case "get_pending_sauda":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getPendingSauda({
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
+          branchCode: args.branchCode as string | undefined,
+          productQuery: args.productQuery as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
         });
         break;
       case "search_sales_orders":

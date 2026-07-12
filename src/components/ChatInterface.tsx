@@ -56,16 +56,16 @@ const WELCOME_MESSAGE: Message = { role: "assistant", content: WELCOME };
 
 const SUGGESTIONS_BY_COMPANY: Record<CompanyKey, string[]> = {
   chocodelight: [
+    "Pending Sauda",
     "Branch wise sales",
     "Code W sales",
-    "List all customers",
     "What is month-wise sales this year?",
     "Show available items",
   ],
   saurabhfood: [
+    "Pending Sauda",
     "Branch wise sales",
     "Code J Bhairahawa sales",
-    "Mustard oil sales this year",
     "Pending amount of Bhatbhateni above 90 days",
     "Total sales this year",
   ],

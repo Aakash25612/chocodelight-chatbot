@@ -1,7 +1,7 @@
 import { formatAmount } from "./format";
 import { getReceivablesAging } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
-import { getSalesByBranch, getBranchWiseSales } from "./analytics-queries";
+import { getSalesByBranch, getBranchWiseSales, getPendingSauda } from "./analytics-queries";
 import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
@@ -51,6 +51,10 @@ export async function getDirectResponse(
       return listAllCustomers();
     }
 
+    if (isPendingSaudaQuery(normalized)) {
+      return formatPendingSauda(message);
+    }
+
     if (isReceivablesQuery(normalized)) {
       return formatReceivablesResponse(message, normalized);
     }
@@ -83,6 +87,120 @@ function extractBranchFromMessage(message: string): string | null {
   }
 
   return null;
+}
+
+function isPendingSaudaQuery(message: string): boolean {
+  return (
+    /\bpending\s+sauda\b/.test(message) ||
+    /\bsauda\s+pending\b/.test(message) ||
+    /\bunshipped\b/.test(message) ||
+    /\bpending\s+(sales\s+)?orders?\b/.test(message) ||
+    /\blocked\s+orders?\b.*\b(pending|unshipped|not\s+shipped)\b/.test(message) ||
+    /\b(quantity|qty)\s*[-–]\s*(quantity\s*)?shipped\b/.test(message)
+  );
+}
+
+async function formatPendingSauda(message: string): Promise<string> {
+  const branch = resolveBranch({ query: message });
+  const branchCode = "error" in branch ? undefined : branch.code;
+
+  const data = (await getPendingSauda({
+    ...(branchCode ? { branchCode } : {}),
+    limit: 25,
+  })) as {
+    error?: string;
+    summary?: {
+      ordersWithPending?: number;
+      pendingLineCount?: number;
+      totalPendingQuantity?: number;
+      totalPendingAmount?: number;
+    };
+    topItems?: Array<{
+      itemNo: string;
+      itemName: string;
+      pendingQuantity: number;
+      pendingAmount: number;
+    }>;
+    topCustomers?: Array<{
+      customerNo: string;
+      customerName: string;
+      pendingQuantity: number;
+      pendingAmount: number;
+      orderCount: number;
+    }>;
+    lines?: Array<{
+      orderNo: string;
+      customerName: string;
+      itemName: string;
+      itemNo: string;
+      pendingQuantity: number;
+      quantity: number;
+      quantityShipped: number;
+      pendingAmount: number;
+    }>;
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const s = data.summary ?? {};
+  const lines = [
+    `**Pending Sauda (Locked orders, unshipped qty)** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    "| Metric | Value |",
+    "|---|---:|",
+    `| Orders with pending qty | ${s.ordersWithPending ?? 0} |`,
+    `| Pending lines | ${s.pendingLineCount ?? 0} |`,
+    `| Total pending quantity | ${formatAmount(s.totalPendingQuantity ?? 0)} |`,
+    `| Total pending amount | **${formatAmount(s.totalPendingAmount ?? 0)}** |`,
+    "",
+    "Rule: `orderStatus = Locked` and `quantity − quantityShipped > 0`. Amount = pending qty × unit price.",
+  ];
+
+  if (data.topItems?.length) {
+    lines.push(
+      "",
+      "### Top items",
+      "",
+      "| Item | Pending qty | Amount (NPR) |",
+      "|---|---:|---:|",
+      ...data.topItems.slice(0, 10).map(
+        (row) =>
+          `| ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+      ),
+    );
+  }
+
+  if (data.topCustomers?.length) {
+    lines.push(
+      "",
+      "### Top customers",
+      "",
+      "| Customer | Orders | Pending qty | Amount (NPR) |",
+      "|---|---:|---:|---:|",
+      ...data.topCustomers.slice(0, 10).map(
+        (row) =>
+          `| ${escapeCell(row.customerName || row.customerNo)} | ${row.orderCount} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+      ),
+    );
+  }
+
+  if (data.lines?.length) {
+    lines.push(
+      "",
+      "### Detail lines",
+      "",
+      "| Order | Customer | Item | Ordered | Shipped | Pending | Amount |",
+      "|---|---|---|---:|---:|---:|---:|",
+      ...data.lines.slice(0, 15).map(
+        (row) =>
+          `| ${escapeCell(row.orderNo)} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.quantity)} | ${formatAmount(row.quantityShipped)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+      ),
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function isReceivablesQuery(message: string): boolean {

@@ -74,12 +74,17 @@ type SalesOrder = {
   orderStatus?: string;
   salesperson?: string;
   completelyInvoicedOrder?: boolean;
+  accountabilityCenter?: string;
+  locationCode?: string;
+  pricesIncludeTax?: boolean;
 };
 
 type SalesOrderLine = {
   docNo?: string;
   itemNo?: string;
+  lineNo?: number;
   quantity?: number;
+  quantityShipped?: number;
   quantityInvoiced?: number;
   unitPrice?: number;
 };
@@ -1505,6 +1510,254 @@ export async function getCategorySales(
   };
 }
 
+/**
+ * Pending Sauda: Locked sales orders with unshipped quantity.
+ * Rule: orderStatus = Locked AND (quantity - quantityShipped) > 0.
+ */
+export async function getPendingSauda(input?: {
+  query?: string;
+  customerNo?: string;
+  branchCode?: string;
+  productQuery?: string;
+  limit?: number;
+}): Promise<unknown> {
+  const lineLimit = Math.min(input?.limit ?? 40, 100);
+  const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
+
+  let customerNo = input?.customerNo?.trim() || undefined;
+  let customerName = "";
+  let branchCode: string | null = input?.branchCode?.trim()
+    ? normalizeBranchCode(input.branchCode)
+    : null;
+
+  if (input?.branchCode?.trim()) {
+    const branch = resolveBranch({ branchCode: input.branchCode });
+    if ("error" in branch) return branch;
+    branchCode = branch.code;
+  } else if (input?.query?.trim() && !customerNo) {
+    const branch = resolveBranch({ query: input.query });
+    if (!("error" in branch)) {
+      branchCode = branch.code;
+    } else {
+      const resolved = await resolveCustomerNo({ query: input.query });
+      if ("error" in resolved) return resolved;
+      customerNo = resolved.customerNo;
+      customerName = resolved.name;
+    }
+  } else if (customerNo) {
+    const resolved = await resolveCustomerNo({ customerNo });
+    if ("error" in resolved) return resolved;
+    customerName = resolved.name;
+  }
+
+  const [ordersPayload, linesPayload, itemsPayload, names] = await Promise.all([
+    loadSalesOrders(),
+    loadSalesOrderLines(),
+    loadItems(),
+    buildCustomerNameMap(),
+  ]);
+  if (ordersPayload.error) return { error: ordersPayload.error };
+  if (linesPayload.error) return { error: linesPayload.error };
+
+  const itemMeta = new Map<string, Item>();
+  for (const item of itemsPayload.value ?? []) {
+    if (item.number) itemMeta.set(item.number, item);
+  }
+
+  const lockedOrders = new Map<string, SalesOrder>();
+  for (const order of ordersPayload.value ?? []) {
+    if (String(order.orderStatus ?? "").toLowerCase() !== "locked") continue;
+    const no = String(order.number ?? "").trim();
+    if (!no) continue;
+    if (customerNo && order.customerNumber !== customerNo) continue;
+
+    const orderBranch =
+      normalizeBranchCode(String(order.accountabilityCenter ?? "")) ||
+      normalizeBranchCode(String(order.locationCode ?? "")) ||
+      branchCodeFromDocument(order.number) ||
+      "";
+    if (branchCode && orderBranch !== branchCode) continue;
+
+    lockedOrders.set(no, order);
+  }
+
+  type PendingLine = {
+    orderNo: string;
+    postingDate: string;
+    customerNo: string;
+    customerName: string;
+    branchCode: string;
+    branchName: string;
+    itemNo: string;
+    itemName: string;
+    lineNo: number;
+    quantity: number;
+    quantityShipped: number;
+    pendingQuantity: number;
+    unitPrice: number;
+    pendingAmount: number;
+  };
+
+  const pendingLines: PendingLine[] = [];
+  const byItem = new Map<
+    string,
+    {
+      itemNo: string;
+      itemName: string;
+      pendingQuantity: number;
+      pendingAmount: number;
+      lineCount: number;
+      orderCount: Set<string>;
+    }
+  >();
+  const byCustomer = new Map<
+    string,
+    {
+      customerNo: string;
+      customerName: string;
+      pendingQuantity: number;
+      pendingAmount: number;
+      lineCount: number;
+      orderCount: Set<string>;
+    }
+  >();
+  const ordersWithPending = new Set<string>();
+
+  function matchesProduct(itemNo: string, name: string): boolean {
+    if (!productTerm) return true;
+    return `${itemNo} ${name}`.toLowerCase().includes(productTerm);
+  }
+
+  for (const line of linesPayload.value ?? []) {
+    const orderNo = String(line.docNo ?? "").trim();
+    const order = lockedOrders.get(orderNo);
+    if (!order) continue;
+
+    const quantity = Number(line.quantity ?? 0);
+    const quantityShipped = Number(line.quantityShipped ?? 0);
+    const pendingQuantity = quantity - quantityShipped;
+    if (pendingQuantity <= 0) continue;
+
+    const itemNo = String(line.itemNo ?? "").trim();
+    if (!itemNo) continue;
+    const itemName = itemMeta.get(itemNo)?.displayName ?? itemNo;
+    if (!matchesProduct(itemNo, itemName)) continue;
+
+    const unitPrice = Number(line.unitPrice ?? 0);
+    const pendingAmount = round(pendingQuantity * unitPrice);
+    const custNo = String(order.customerNumber ?? "");
+    const orderBranch =
+      normalizeBranchCode(String(order.accountabilityCenter ?? "")) ||
+      normalizeBranchCode(String(order.locationCode ?? "")) ||
+      branchCodeFromDocument(order.number) ||
+      "";
+
+    ordersWithPending.add(orderNo);
+    pendingLines.push({
+      orderNo,
+      postingDate: String(order.postingDate ?? ""),
+      customerNo: custNo,
+      customerName: names.get(custNo) ?? "",
+      branchCode: orderBranch,
+      branchName: orderBranch ? branchNameForCode(orderBranch) : "",
+      itemNo,
+      itemName,
+      lineNo: Number(line.lineNo ?? 0),
+      quantity: round(quantity),
+      quantityShipped: round(quantityShipped),
+      pendingQuantity: round(pendingQuantity),
+      unitPrice: round(unitPrice),
+      pendingAmount,
+    });
+
+    const itemAgg =
+      byItem.get(itemNo) ??
+      {
+        itemNo,
+        itemName,
+        pendingQuantity: 0,
+        pendingAmount: 0,
+        lineCount: 0,
+        orderCount: new Set<string>(),
+      };
+    itemAgg.pendingQuantity += pendingQuantity;
+    itemAgg.pendingAmount += pendingAmount;
+    itemAgg.lineCount += 1;
+    itemAgg.orderCount.add(orderNo);
+    byItem.set(itemNo, itemAgg);
+
+    const custAgg =
+      byCustomer.get(custNo) ??
+      {
+        customerNo: custNo,
+        customerName: names.get(custNo) ?? "",
+        pendingQuantity: 0,
+        pendingAmount: 0,
+        lineCount: 0,
+        orderCount: new Set<string>(),
+      };
+    custAgg.pendingQuantity += pendingQuantity;
+    custAgg.pendingAmount += pendingAmount;
+    custAgg.lineCount += 1;
+    custAgg.orderCount.add(orderNo);
+    byCustomer.set(custNo, custAgg);
+  }
+
+  pendingLines.sort((a, b) => b.pendingAmount - a.pendingAmount);
+
+  const totalPendingQuantity = round(
+    pendingLines.reduce((sum, row) => sum + row.pendingQuantity, 0),
+  );
+  const totalPendingAmount = round(
+    pendingLines.reduce((sum, row) => sum + row.pendingAmount, 0),
+  );
+
+  return {
+    currency: "NPR",
+    displayNote:
+      "Pending Sauda = Locked sales orders with quantity still to ship (quantity − quantityShipped > 0). Amount = pendingQuantity × unitPrice from the order line.",
+    basis:
+      "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped.",
+    filter: {
+      customerNo: customerNo ?? null,
+      customerName: customerName || null,
+      branchCode,
+      productQuery: productTerm || null,
+    },
+    summary: {
+      lockedOrdersScanned: lockedOrders.size,
+      ordersWithPending: ordersWithPending.size,
+      pendingLineCount: pendingLines.length,
+      totalPendingQuantity,
+      totalPendingAmount,
+    },
+    topItems: [...byItem.values()]
+      .map((row) => ({
+        itemNo: row.itemNo,
+        itemName: row.itemName,
+        pendingQuantity: round(row.pendingQuantity),
+        pendingAmount: round(row.pendingAmount),
+        lineCount: row.lineCount,
+        orderCount: row.orderCount.size,
+      }))
+      .sort((a, b) => b.pendingAmount - a.pendingAmount)
+      .slice(0, 20),
+    topCustomers: [...byCustomer.values()]
+      .map((row) => ({
+        customerNo: row.customerNo,
+        customerName: row.customerName,
+        pendingQuantity: round(row.pendingQuantity),
+        pendingAmount: round(row.pendingAmount),
+        lineCount: row.lineCount,
+        orderCount: row.orderCount.size,
+      }))
+      .sort((a, b) => b.pendingAmount - a.pendingAmount)
+      .slice(0, 20),
+    lines: pendingLines.slice(0, lineLimit),
+    _syncedAt: ordersPayload._syncedAt ?? linesPayload._syncedAt,
+  };
+}
+
 /** Sales orders summary — counts, status, top customers by order value. */
 export async function getSalesOrdersSummary(
   input?: {
@@ -2265,6 +2518,7 @@ export async function getVatReport(
     line: {
       postingDate?: string;
       accountabilityCenter?: string;
+      documentNo?: string;
       lineAmountInclVAT?: number;
       lineAmount?: number;
       lineAmountExclVAT?: number;
