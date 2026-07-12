@@ -191,7 +191,12 @@ async function formatPendingSauda(message: string): Promise<string> {
         ),
       ].join("\n");
     }
-    return data.error;
+    const activeCompany = getCompany(getActiveCompany()).displayName;
+    return [
+      data.error,
+      "",
+      `Active company: **${activeCompany}**. Pending Sauda only searches Locked sales orders here — switch company in the dropdown if this party is under the other company.`,
+    ].join("\n");
   }
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
