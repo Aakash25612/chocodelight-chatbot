@@ -1196,7 +1196,7 @@ export async function executeTool(
         break;
       case "get_branch_wise_sales":
         if (!useSupabaseMirror) return { error: mirrorOnly };
-        result = await getBranchWiseSales(periodArgs(args));
+        result = await getBranchWiseSales(nepaliPreferredPeriodArgs(args));
         break;
       case "get_sales_by_branch":
         if (!useSupabaseMirror) return { error: mirrorOnly };
@@ -1204,7 +1204,7 @@ export async function executeTool(
           query: args.query as string | undefined,
           branchCode: args.branchCode as string | undefined,
           monthlyBreakdown: args.monthlyBreakdown === true,
-          ...periodArgs(args),
+          ...nepaliPreferredPeriodArgs(args),
         });
         break;
       case "get_branch_product_sales":
@@ -1214,7 +1214,7 @@ export async function executeTool(
           branchCode: args.branchCode as string | undefined,
           productQuery: args.productQuery as string | undefined,
           monthlyBreakdown: args.monthlyBreakdown === true,
-          ...periodArgs(args),
+          ...nepaliPreferredPeriodArgs(args),
         });
         break;
       case "get_vat_report":

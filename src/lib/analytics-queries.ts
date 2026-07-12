@@ -177,6 +177,105 @@ function hasCustomPeriod(input?: DatePeriodInput): boolean {
   );
 }
 
+type PostedSalesDoc = {
+  documentNo?: string;
+  postingDate?: string;
+  branchCode?: string;
+  salesAmount?: number;
+  salesAmountIncludingTax?: number;
+  documentKind?: "invoice" | "credit_memo";
+};
+
+async function loadPostedSalesDocuments(): Promise<
+  MirrorPayload<PostedSalesDoc>
+> {
+  return (await getMirror("postedSalesDocuments")) as MirrorPayload<PostedSalesDoc>;
+}
+
+function aggregatePostedDocsByBranch(
+  docs: PostedSalesDoc[],
+  matches: (postingDate: string) => boolean,
+): Map<string, { salesIncl: number; salesExcl: number; invoices: number }> {
+  const map = new Map<
+    string,
+    { salesIncl: number; salesExcl: number; invoices: number }
+  >();
+
+  for (const doc of docs) {
+    const code = normalizeBranchCode(String(doc.branchCode ?? ""));
+    if (!code) continue;
+    if (!matches(String(doc.postingDate ?? ""))) continue;
+
+    const incl = Number(doc.salesAmountIncludingTax ?? doc.salesAmount ?? 0);
+    const excl = Number(doc.salesAmount ?? incl);
+    const isInvoice = doc.documentKind !== "credit_memo";
+    const sign = isInvoice ? 1 : -1;
+    const agg = map.get(code) ?? { salesIncl: 0, salesExcl: 0, invoices: 0 };
+    agg.salesIncl += sign * Math.abs(incl);
+    agg.salesExcl += sign * Math.abs(excl);
+    if (isInvoice) agg.invoices += 1;
+    map.set(code, agg);
+  }
+
+  return map;
+}
+
+function branchFiscalMonthRowsFromPosted(
+  docs: PostedSalesDoc[],
+  branchCode: string,
+  fyStartYear: number,
+): BranchMonthRow[] {
+  const monthMap = new Map<
+    number,
+    { salesIncl: number; salesExcl: number; invoices: number; bsYear: number }
+  >();
+
+  for (const doc of docs) {
+    if (normalizeBranchCode(String(doc.branchCode ?? "")) !== branchCode) {
+      continue;
+    }
+    const date = parseDate(doc.postingDate);
+    if (!date) continue;
+    const fy = getNepaliFiscalYear(date);
+    if (!fy || fy.startYear !== fyStartYear) continue;
+    const bs = toBs(date);
+    if (!bs) continue;
+
+    const incl = Number(doc.salesAmountIncludingTax ?? doc.salesAmount ?? 0);
+    const excl = Number(doc.salesAmount ?? incl);
+    const isInvoice = doc.documentKind !== "credit_memo";
+    const sign = isInvoice ? 1 : -1;
+    const agg = monthMap.get(bs.month) ?? {
+      salesIncl: 0,
+      salesExcl: 0,
+      invoices: 0,
+      bsYear: bs.year,
+    };
+    agg.salesIncl += sign * Math.abs(incl);
+    agg.salesExcl += sign * Math.abs(excl);
+    if (isInvoice) agg.invoices += 1;
+    monthMap.set(bs.month, agg);
+  }
+
+  return FISCAL_MONTH_ORDER.map((monthIndex) => {
+    const bsYear = monthIndex >= 3 ? fyStartYear : fyStartYear + 1;
+    const agg = monthMap.get(monthIndex) ?? {
+      salesIncl: 0,
+      salesExcl: 0,
+      invoices: 0,
+      bsYear,
+    };
+    return {
+      bsMonth: BS_MONTHS[monthIndex],
+      monthIndex,
+      bsYear,
+      salesIncludingTax: round(agg.salesIncl),
+      salesExcludingTax: round(agg.salesExcl),
+      invoices: agg.invoices,
+    };
+  });
+}
+
 async function buildCustomerNameMap(): Promise<Map<string, string>> {
   const payload = await loadCustomers();
   const map = new Map<string, string>();
@@ -2009,7 +2108,10 @@ export async function getBranchProductSales(
   }
 
   for (const line of posted.invoiceLines) {
-    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    const branch =
+      normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+      branchCodeFromDocument(line.documentNo) ||
+      "";
     if (branch !== resolved.code) continue;
     const postingDate = String(line.postingDate ?? "");
     if (!lineMatchesPeriod(postingDate)) continue;
@@ -2048,7 +2150,10 @@ export async function getBranchProductSales(
   }
 
   for (const line of posted.crMemoLines) {
-    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    const branch =
+      normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+      branchCodeFromDocument(line.documentNo) ||
+      "";
     if (branch !== resolved.code) continue;
     const postingDate = String(line.postingDate ?? "");
     if (!lineMatchesPeriod(postingDate)) continue;
@@ -2173,7 +2278,10 @@ export async function getVatReport(
       const fy = getNepaliFiscalYear(date);
       if (!fy || fy.startYear !== startYear) return;
     }
-    const branch = normalizeBranchCode(String(line.accountabilityCenter ?? ""));
+    const branch =
+      normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+      branchCodeFromDocument(line.documentNo) ||
+      "";
     if (branchFilter && branch !== branchFilter) return;
 
     const incl = postedLineSalesIncl(line) * sign;
@@ -2315,6 +2423,93 @@ export async function getBranchWiseSales(
     };
   }
 
+  const postedPayload = await loadPostedSalesDocuments();
+  const usePosted =
+    !postedPayload.error &&
+    Array.isArray(postedPayload.value) &&
+    postedPayload.value.length > 0;
+
+  if (usePosted) {
+    const totals = aggregatePostedDocsByBranch(
+      postedPayload.value ?? [],
+      period.matches,
+    );
+    const rows = [...totals.entries()]
+      .map(([code, agg]) => ({
+        branchCode: code,
+        branchName: branchNameForCode(code),
+        salesIncludingTax: round(agg.salesIncl),
+        salesExcludingTax: round(agg.salesExcl),
+        invoices: agg.invoices,
+      }))
+      .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
+
+    const totalIncl = round(
+      rows.reduce((sum, row) => sum + row.salesIncludingTax, 0),
+    );
+    const totalExcl = round(
+      rows.reduce((sum, row) => sum + row.salesExcludingTax, 0),
+    );
+
+    const currentFyStart = getCurrentFiscalYearStart();
+    let currentFiscalYear: {
+      label: string;
+      branches: typeof rows;
+      totalSalesIncludingTax: number;
+      totalSalesExcludingTax: number;
+      totalSales: number;
+    } | null = null;
+
+    if (currentFyStart && !hasCustomPeriod(input)) {
+      const fyTotals = aggregatePostedDocsByBranch(
+        postedPayload.value ?? [],
+        (postingDate) => {
+          const date = parseDate(postingDate);
+          if (!date) return false;
+          const fy = getNepaliFiscalYear(date);
+          return fy?.startYear === currentFyStart;
+        },
+      );
+      const fyRows = [...fyTotals.entries()]
+        .map(([code, agg]) => ({
+          branchCode: code,
+          branchName: branchNameForCode(code),
+          salesIncludingTax: round(agg.salesIncl),
+          salesExcludingTax: round(agg.salesExcl),
+          invoices: agg.invoices,
+        }))
+        .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
+      const fyIncl = round(
+        fyRows.reduce((sum, row) => sum + row.salesIncludingTax, 0),
+      );
+      const fyExcl = round(
+        fyRows.reduce((sum, row) => sum + row.salesExcludingTax, 0),
+      );
+      currentFiscalYear = {
+        label: fiscalYearLabel(currentFyStart),
+        branches: fyRows,
+        totalSalesIncludingTax: fyIncl,
+        totalSalesExcludingTax: fyExcl,
+        totalSales: fyExcl,
+      };
+    }
+
+    return {
+      currency: "NPR",
+      period: period.label,
+      displayNote:
+        "ALWAYS present branchName as the primary label. Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT).",
+      basis:
+        "Posted sales invoices (amountIncludingVAT) minus credit memos. Branch = accountability center / document prefix.",
+      totalSalesIncludingTax: totalIncl,
+      totalSalesExcludingTax: totalExcl,
+      branchCount: rows.length,
+      branches: rows,
+      currentNepaliFiscalYear: currentFiscalYear,
+      _syncedAt: postedPayload._syncedAt,
+    };
+  }
+
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
@@ -2334,48 +2529,16 @@ export async function getBranchWiseSales(
 
   const totalSales = round(rows.reduce((sum, row) => sum + row.salesExcludingTax, 0));
 
-  const currentFyStart = getCurrentFiscalYearStart();
-  let currentFiscalYear: {
-    label: string;
-    branches: typeof rows;
-    totalSales: number;
-  } | null = null;
-
-  if (currentFyStart && !hasCustomPeriod(input)) {
-    const fyTotals = aggregateInvoiceSalesByBranch(
-      ledgerPayload.value ?? [],
-      (postingDate) => {
-        const date = parseDate(postingDate);
-        if (!date) return false;
-        const fy = getNepaliFiscalYear(date);
-        return fy?.startYear === currentFyStart;
-      },
-    );
-    const fyRows = [...fyTotals.entries()]
-      .map(([code, agg]) => ({
-        branchCode: code,
-        branchName: branchNameForCode(code),
-        salesExcludingTax: round(agg.sales),
-        invoices: agg.invoices,
-      }))
-      .sort((a, b) => b.salesExcludingTax - a.salesExcludingTax);
-    currentFiscalYear = {
-      label: fiscalYearLabel(currentFyStart),
-      branches: fyRows,
-      totalSales: round(fyRows.reduce((sum, row) => sum + row.salesExcludingTax, 0)),
-    };
-  }
-
   return {
     currency: "NPR",
     period: period.label,
     calendar: input?.year || input?.month ? "AD" : "all_synced_periods",
     basis:
-      "Posted customer-ledger invoices (salesLcy). Branch = document prefix before underscore (e.g. J_SFP_...).",
+      "Ledger fallback (salesLcy). Run sync for posted sales invoices. Branch = document prefix before underscore.",
     totalSalesExcludingTax: totalSales,
     branchCount: rows.length,
     branches: rows,
-    currentNepaliFiscalYear: currentFiscalYear,
+    currentNepaliFiscalYear: null,
     _syncedAt: ledgerPayload._syncedAt,
   };
 }
@@ -2519,6 +2682,133 @@ export async function getSalesByBranch(
     };
   }
 
+  const postedPayload = await loadPostedSalesDocuments();
+  const usePosted =
+    !postedPayload.error &&
+    Array.isArray(postedPayload.value) &&
+    postedPayload.value.length > 0;
+
+  if (usePosted) {
+    const docs = postedPayload.value ?? [];
+    const monthlyFyStart =
+      typeof input?.fiscalYearStart === "number"
+        ? input.fiscalYearStart
+        : wantsMonthly
+          ? currentFyStart
+          : null;
+
+    if (wantsMonthly && monthlyFyStart) {
+      const months = branchFiscalMonthRowsFromPosted(
+        docs,
+        resolved.code,
+        monthlyFyStart,
+      );
+      const fySalesIncl = round(
+        months.reduce((sum, m) => sum + m.salesIncludingTax, 0),
+      );
+      const fySalesExcl = round(
+        months.reduce((sum, m) => sum + m.salesExcludingTax, 0),
+      );
+      const fyInvoices = months.reduce((sum, m) => sum + m.invoices, 0);
+
+      return {
+        currency: "NPR",
+        branchCode: resolved.code,
+        branchName: resolved.name,
+        calendar: "Bikram Sambat",
+        fiscalYear: fiscalYearLabel(monthlyFyStart),
+        period: `Nepali FY ${fiscalYearLabel(monthlyFyStart)}`,
+        displayNote:
+          "Present totalSalesIncludingTax and byNepaliMonth.salesIncludingTax (Incl. VAT).",
+        basis:
+          "Posted sales invoices (amountIncludingVAT) by branch. Months in fiscal order (Shrawan → Ashadh).",
+        totalSalesIncludingTax: fySalesIncl,
+        totalSalesExcludingTax: fySalesExcl,
+        invoiceCount: fyInvoices,
+        byNepaliMonth: months,
+        _syncedAt: postedPayload._syncedAt,
+      };
+    }
+
+    let totalIncl = 0;
+    let totalExcl = 0;
+    let invoiceCount = 0;
+    const byBsMonth = new Map<
+      string,
+      {
+        bsMonth: string;
+        bsYear: number;
+        salesIncl: number;
+        salesExcl: number;
+        invoices: number;
+      }
+    >();
+
+    for (const doc of docs) {
+      if (normalizeBranchCode(String(doc.branchCode ?? "")) !== resolved.code) {
+        continue;
+      }
+      if (!period.matches(String(doc.postingDate ?? ""))) continue;
+
+      const incl = Number(doc.salesAmountIncludingTax ?? doc.salesAmount ?? 0);
+      const excl = Number(doc.salesAmount ?? incl);
+      const isInvoice = doc.documentKind !== "credit_memo";
+      const sign = isInvoice ? 1 : -1;
+      totalIncl += sign * Math.abs(incl);
+      totalExcl += sign * Math.abs(excl);
+      if (isInvoice) invoiceCount += 1;
+
+      const date = parseDate(doc.postingDate);
+      const bs = date ? toBs(date) : null;
+      if (bs) {
+        const key = `${bs.year}-${bs.month}`;
+        const agg =
+          byBsMonth.get(key) ??
+          {
+            bsMonth: BS_MONTHS[bs.month] ?? String(bs.month + 1),
+            bsYear: bs.year,
+            salesIncl: 0,
+            salesExcl: 0,
+            invoices: 0,
+          };
+        agg.salesIncl += sign * Math.abs(incl);
+        agg.salesExcl += sign * Math.abs(excl);
+        if (isInvoice) agg.invoices += 1;
+        byBsMonth.set(key, agg);
+      }
+    }
+
+    const monthly = [...byBsMonth.values()]
+      .map((row) => ({
+        bsMonth: row.bsMonth,
+        bsYear: row.bsYear,
+        salesIncludingTax: round(row.salesIncl),
+        salesExcludingTax: round(row.salesExcl),
+        invoices: row.invoices,
+      }))
+      .sort((a, b) =>
+        a.bsYear === b.bsYear
+          ? a.bsMonth.localeCompare(b.bsMonth)
+          : a.bsYear - b.bsYear,
+      );
+
+    return {
+      currency: "NPR",
+      branchCode: resolved.code,
+      branchName: resolved.name,
+      period: period.label,
+      displayNote:
+        "Present totalSalesIncludingTax and salesIncludingTax (Incl. VAT).",
+      basis:
+        "Posted sales invoices (amountIncludingVAT) by branch accountability center / document prefix.",
+      totalSalesIncludingTax: round(totalIncl),
+      totalSalesExcludingTax: round(totalExcl),
+      invoiceCount,
+      byNepaliMonth: monthly,
+      _syncedAt: postedPayload._syncedAt,
+    };
+  }
+
   const ledgerPayload = await loadLedger();
   if (ledgerPayload.error) return { error: ledgerPayload.error };
 
@@ -2541,7 +2831,7 @@ export async function getSalesByBranch(
       fiscalYear: fyLabel,
       period: fyLabel ? `Nepali FY ${fyLabel}` : period.label,
       basis:
-        "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code. Months in fiscal order (Shrawan → Ashadh).",
+        "Ledger fallback (salesLcy). Run sync for posted sales invoices.",
       totalSalesExcludingTax: fySales,
       invoiceCount: fyInvoices,
       byNepaliMonth: months,
@@ -2598,7 +2888,7 @@ export async function getSalesByBranch(
     branchName: resolved.name,
     period: period.label,
     basis:
-      "Posted customer-ledger invoices (salesLcy) where document number starts with the branch code, e.g. B_SFP_...",
+      "Ledger fallback (salesLcy). Run sync for posted sales invoices.",
     totalSalesExcludingTax: round(totalSales),
     invoiceCount,
     byNepaliMonth: monthly,

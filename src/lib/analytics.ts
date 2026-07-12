@@ -1311,7 +1311,7 @@ export async function loadPostedInvoiceLinePayloads(): Promise<{
 }
 
 /**
- * Product-level posted sales from synced invoice lines (Choco Delight) or,
+ * Product-level posted sales from synced invoice lines (both companies), or,
  * as fallback, invoiced sales order lines.
  */
 export async function getProductSales(

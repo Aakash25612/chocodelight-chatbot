@@ -1,9 +1,12 @@
 /**
- * Verify Choco Delight posted invoice / credit memo APIs on live BC.
+ * Verify posted invoice / credit memo APIs on live BC for both companies.
  *   npx tsx scripts/test-invoice-api.ts
+ *   npx tsx scripts/test-invoice-api.ts chocodelight
+ *   npx tsx scripts/test-invoice-api.ts saurabhfood
  */
 import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
+import type { CompanyKey } from "../src/lib/companies";
 
 function loadEnvFile(path: string) {
   if (!existsSync(path)) return;
@@ -20,7 +23,7 @@ function loadEnvFile(path: string) {
 
 loadEnvFile(resolve(process.cwd(), ".env.local"));
 
-async function main() {
+async function probeCompany(company: CompanyKey) {
   const { runWithCompany } = await import("../src/lib/company-context");
   const { bcApi } = await import("../src/lib/bc-client");
   const {
@@ -28,8 +31,9 @@ async function main() {
     flattenSalesInvoiceLines,
   } = await import("../src/lib/invoice-lines");
 
-  await runWithCompany("chocodelight", async () => {
-    console.log("Fetching salesInvoiceHeaders…");
+  await runWithCompany(company, async () => {
+    console.log(`\n=== ${company} ===`);
+    console.log("Fetching salesInvoiceHeaders?$expand=salesInvoiceLines…");
     const invoices = await bcApi.getSalesInvoiceHeaders();
     const invoiceLines = flattenSalesInvoiceLines(
       (invoices.value ?? []) as Parameters<typeof flattenSalesInvoiceLines>[0],
@@ -38,17 +42,17 @@ async function main() {
       `Invoices: ${invoices.value?.length ?? 0}, item lines: ${invoiceLines.length}`,
     );
     if (invoiceLines[0]) {
-      console.log("Sample invoice line:", invoiceLines[0]);
-      console.log(
-        "Sample VAT:",
-        "excl",
-        invoiceLines[0].lineAmountExclVAT,
-        "incl",
-        invoiceLines[0].lineAmountInclVAT,
-      );
+      console.log("Sample invoice line:", {
+        documentNo: invoiceLines[0].documentNo,
+        itemNo: invoiceLines[0].itemNo,
+        lineAmount: invoiceLines[0].lineAmount,
+        lineAmountInclVAT: invoiceLines[0].lineAmountInclVAT,
+        salespersonCode: invoiceLines[0].salespersonCode,
+        accountabilityCenter: invoiceLines[0].accountabilityCenter,
+      });
     }
 
-    console.log("Fetching salesCrMemos…");
+    console.log("Fetching salesCrMemos?$expand=salesCrMemoLines…");
     const memos = await bcApi.getSalesCrMemos();
     const memoLines = flattenSalesCrMemoLines(
       (memos.value ?? []) as Parameters<typeof flattenSalesCrMemoLines>[0],
@@ -56,16 +60,19 @@ async function main() {
     console.log(
       `Credit memos: ${memos.value?.length ?? 0}, item lines: ${memoLines.length}`,
     );
-    if (memoLines[0]) {
-      console.log("Sample credit memo line:", memoLines[0]);
-    }
-
-    const dipLines = invoiceLines.filter((line) =>
-      /dip/i.test(`${line.itemNo} ${line.description}`),
-    );
-    const dipQty = dipLines.reduce((sum, line) => sum + line.quantity, 0);
-    console.log(`Dip invoice lines: ${dipLines.length}, total qty: ${dipQty}`);
   });
+}
+
+async function main() {
+  const arg = process.argv[2] as CompanyKey | undefined;
+  const companies: CompanyKey[] =
+    arg === "chocodelight" || arg === "saurabhfood"
+      ? [arg]
+      : ["chocodelight", "saurabhfood"];
+
+  for (const company of companies) {
+    await probeCompany(company);
+  }
 }
 
 main().catch((error) => {

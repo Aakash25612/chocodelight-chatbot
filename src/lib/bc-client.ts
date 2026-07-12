@@ -88,13 +88,13 @@ export const bcApi = {
   getSalesOrderLines: () =>
     requestAll(`${getCompanyPath()}/salesOrderLines`),
 
-  /** Posted sales invoices with lines (Choco Delight custom API). */
+  /** Posted sales invoices with lines (same custom API for both companies). */
   getSalesInvoiceHeaders: () =>
     requestAll(
       `${getCompanyPath()}/salesInvoiceHeaders?$expand=salesInvoiceLines`,
     ),
 
-  /** Posted sales credit memos with lines (Choco Delight custom API). */
+  /** Posted sales credit memos with lines (same custom API for both companies). */
   getSalesCrMemos: () =>
     requestAll(`${getCompanyPath()}/salesCrMemos?$expand=salesCrMemoLines`),
 
