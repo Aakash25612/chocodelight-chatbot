@@ -162,7 +162,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_customer_statement",
     description:
-      "Get a customer's invoiced vs paid summary, open balance, overdue invoices, and recent payments. Use for 'how much has X paid', payment history, outstanding balance for one customer, or follow-up after receivables aging. Pass query (name), customerNo, and/or documentNo from a prior invoice.",
+      "Get a customer's invoiced vs paid summary, open balance, overdue invoices, and recent payments. Use for 'how much has X paid', payment history, outstanding balance for one customer, or follow-up after receivables aging. Pass query (name), customerNo, and/or documentNo from a prior invoice. NEVER use for 'sauda' / 'pending sauda' — that is get_pending_sauda (unshipped Locked order qty), not open invoices.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
