@@ -1534,7 +1534,8 @@ export async function getProductSales(
         : null,
     itemNumbers: explicitItems.length ? explicitItems : null,
     displayNote:
-      'Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax / totalSalesExcludingTax ONLY when the user explicitly asks for excl VAT or net amount — that field is BC line.amount (net revenue after discount), NOT lineAmountExclVAT (list price).',
+      'List EVERY item in `items` (full table) — never top 10 only. Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax / totalSalesExcludingTax ONLY when the user explicitly asks for excl VAT or net amount — that field is BC line.amount (net revenue after discount), NOT lineAmountExclVAT (list price).',
+    itemCount: items.length,
     basis: usePostedInvoices
       ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount. Never use lineAmountExclVAT (pre-discount list price)."
       : "Invoiced sales order lines (quantityInvoiced × unitPrice), joined to sales order posting dates. VAT-inclusive amount not available on this fallback.",
