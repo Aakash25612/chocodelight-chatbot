@@ -3,9 +3,16 @@ import {
   getProductSales,
   getReceivablesAging,
   getNepaliMonthlySales,
+  searchCustomers,
 } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
-import { getSalesByBranch, getBranchWiseSales, getPendingSauda, getChequeInHand } from "./analytics-queries";
+import {
+  getSalesByBranch,
+  getBranchWiseSales,
+  getPendingSauda,
+  getChequeInHand,
+  getCustomerSales,
+} from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
 import {
   cleanProductQueryFragment,
@@ -71,6 +78,11 @@ export async function getDirectResponse(
 
     if (isCompanyFiscalYearSalesQuery(normalized)) {
       return formatCompanyFiscalYearSales(message);
+    }
+
+    const customerSales = await formatCustomerSalesIfMatched(message);
+    if (customerSales) {
+      return customerSales;
     }
 
     if (isProductSalesListQuery(normalized)) {
@@ -635,6 +647,111 @@ async function formatCompanyFiscalYearSales(message: string): Promise<string> {
 
   if (data.note) {
     lines.push("", `_${data.note}_`);
+  }
+
+  return lines.join("\n");
+}
+
+function extractCustomerFromSalesMessage(message: string): string | null {
+  if (!/\b(sale|sales|revenue|turnover)\b/i.test(message)) return null;
+  if (
+    /\b(branch|depot|area\s*wise|region\s*wise|salesperson|salesman)\b/i.test(
+      message,
+    ) ||
+    extractBranchCodeQuery(message)
+  ) {
+    return null;
+  }
+
+  const match =
+    message.match(
+      /\b(?:total\s+)?(?:sale|sales|revenue|turnover)\s+(?:of|for|from)\s+(.+)$/i,
+    ) ??
+    message.match(
+      /^(.+?)\s+(?:total\s+)?(?:sale|sales|revenue|turnover)(?:\s+this\s+(?:fiscal\s+)?year)?$/i,
+    );
+  if (!match?.[1]) return null;
+
+  const cleaned = match[1]
+    .replace(
+      /\b(this\s+fiscal\s+year|current\s+fiscal\s+year|this\s+year|current\s+year|ytd|year\s+to\s+date)\b/gi,
+      " ",
+    )
+    .replace(/[?!.,:;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!cleaned || isFiscalYearOnlyFragment(cleaned)) return null;
+  return cleaned;
+}
+
+async function formatCustomerSalesIfMatched(
+  message: string,
+): Promise<string | null> {
+  const query = extractCustomerFromSalesMessage(message);
+  if (!query) return null;
+
+  const search = (await searchCustomers(query)) as {
+    matchCount?: number;
+    customers?: Array<{
+      customerNo: string;
+      name: string;
+      matchScore?: number;
+    }>;
+  };
+  const matches = search.customers ?? [];
+  if (matches.length !== 1) return null;
+
+  const customer = matches[0];
+  const periodArgs = periodArgsFromProductSalesMessage(message);
+  const data = (await getCustomerSales({
+    customerNo: customer.customerNo,
+    ...periodArgs,
+  })) as {
+    error?: string;
+    name?: string;
+    customerNo?: string;
+    period?: {
+      fiscalYear?: string | null;
+      year?: number | string;
+      month?: number | null;
+    };
+    totalSalesIncludingTax?: number;
+    invoiceCount?: number;
+    byNepaliMonth?: Array<{
+      bsMonth: string;
+      bsYear: number;
+      salesIncludingTax?: number;
+      invoices: number;
+    }>;
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const period = data.period?.fiscalYear
+    ? `Nepali FY ${data.period.fiscalYear}`
+    : "all synced dates";
+  const lines = [
+    `**${data.name ?? customer.name} — total sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    `Period: **${period}**`,
+    `**Sales (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **${data.invoiceCount ?? 0} invoices**`,
+  ];
+
+  if (data.byNepaliMonth?.length) {
+    lines.push(
+      "",
+      "### Month-wise (Bikram Sambat)",
+      "",
+      "| Month | BS Year | Sales Incl. VAT (NPR) | Invoices |",
+      "|---|---:|---:|---:|",
+      ...data.byNepaliMonth.map(
+        (row) =>
+          `| ${row.bsMonth} | ${row.bsYear} | ${formatAmount(row.salesIncludingTax ?? 0)} | ${row.invoices} |`,
+      ),
+    );
   }
 
   return lines.join("\n");
