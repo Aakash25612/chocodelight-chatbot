@@ -1,5 +1,6 @@
 import { getMirror } from "./bc-mirror";
 import { loadUomIndex, quantityToMetricTons } from "./uom-convert";
+import { matchesProductTerms } from "./product-query";
 import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
@@ -1073,8 +1074,16 @@ export async function searchItems(query?: string): Promise<unknown> {
   const term = (query ?? "").trim().toLowerCase();
   const matches = term
     ? items.filter((item) =>
-        [item.number, item.displayName, item.itemCategory, item.itemType].some(
-          (field) => String(field ?? "").toLowerCase().includes(term),
+        matchesProductTerms(
+          [
+            item.number,
+            item.displayName,
+            item.itemCategory,
+            item.itemType,
+          ]
+            .filter(Boolean)
+            .join(" "),
+          term,
         ),
       )
     : items;
@@ -1382,7 +1391,7 @@ export async function getProductSales(
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
-    return haystack.includes(query);
+    return matchesProductTerms(haystack, query);
   }
 
   const byItem = new Map<

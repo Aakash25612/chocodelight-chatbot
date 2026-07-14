@@ -51,3 +51,23 @@ export function cleanProductQueryFragment(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/**
+ * Match a product query as words across the full item metadata haystack.
+ * This supports business aliases where words are split between name/category,
+ * e.g. query "sawa rice" with category "SAWA" and name "... RICE ...".
+ */
+export function matchesProductTerms(
+  haystack: string,
+  query: string,
+): boolean {
+  const normalizedHaystack = haystack.toLowerCase().replace(/\s+/g, " ");
+  const normalizedQuery = query.toLowerCase().trim().replace(/\s+/g, " ");
+  if (!normalizedQuery) return true;
+  if (normalizedHaystack.includes(normalizedQuery)) return true;
+
+  const terms = normalizedQuery
+    .split(/[^a-z0-9]+/)
+    .filter((term) => term.length > 1);
+  return terms.length > 0 && terms.every((term) => normalizedHaystack.includes(term));
+}

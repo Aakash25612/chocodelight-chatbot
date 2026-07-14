@@ -12,6 +12,7 @@ import {
   getPendingSauda,
   getChequeInHand,
   getCustomerSales,
+  getTopCustomers,
 } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
 import {
@@ -74,6 +75,10 @@ export async function getDirectResponse(
 
     if (isChequeInHandQuery(normalized)) {
       return formatChequeInHand(message);
+    }
+
+    if (isTopCustomerSalesQuery(normalized)) {
+      return formatTopCustomerSales(message);
     }
 
     if (isCompanyFiscalYearSalesQuery(normalized)) {
@@ -533,6 +538,76 @@ async function formatPendingSauda(message: string): Promise<string> {
   }
 
   return lines.join("\n");
+}
+
+function isTopCustomerSalesQuery(message: string): boolean {
+  return (
+    /\b(customer|customers|party|parties)\b/.test(message) &&
+    /\b(sale|sales|revenue|turnover)\b/.test(message) &&
+    /\b(top|first|highest|largest|most|amount\s*wise|amount-wise|rank)\b/.test(
+      message,
+    )
+  );
+}
+
+function extractRankingLimit(message: string, fallback = 5): number {
+  const match = message.match(
+    /\b(?:top|first|highest|largest)\s*(\d{1,2})\b/i,
+  );
+  const limit = match ? Number(match[1]) : fallback;
+  return Math.max(1, Math.min(Number.isFinite(limit) ? limit : fallback, 50));
+}
+
+async function formatTopCustomerSales(message: string): Promise<string> {
+  const limit = extractRankingLimit(message);
+  const periodArgs = periodArgsFromProductSalesMessage(message);
+  const data = (await getTopCustomers({
+    limit,
+    rankBy: "invoice_sales",
+    ...periodArgs,
+  })) as {
+    error?: string;
+    period?: {
+      fiscalYear?: string | null;
+      year?: number | string;
+      month?: number | null;
+      monthName?: string | null;
+    };
+    customers?: Array<{
+      customerNo: string;
+      name: string;
+      salesIncludingTax: number;
+      invoiceCount: number;
+    }>;
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const period = data.period?.fiscalYear
+    ? `Nepali FY ${data.period.fiscalYear}`
+    : data.period?.monthName && data.period?.year
+      ? `${data.period.monthName} ${data.period.year}`
+      : "all synced dates";
+  const customers = data.customers ?? [];
+
+  if (customers.length === 0) {
+    return `No posted customer invoice sales found for ${period}.`;
+  }
+
+  return [
+    `**Top ${customers.length} customers by total sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    `Period: **${period}** · Amount basis: **Incl. VAT**`,
+    "",
+    "| Rank | Customer | Sales (NPR) | Invoices |",
+    "|---:|---|---:|---:|",
+    ...customers.map(
+      (row, index) =>
+        `| ${index + 1} | ${escapeCell(row.name || row.customerNo)} | ${formatAmount(row.salesIncludingTax)} | ${row.invoiceCount} |`,
+    ),
+  ].join("\n");
 }
 
 /** Company-wide FY / YTD / this year sales — not a product keyword. */

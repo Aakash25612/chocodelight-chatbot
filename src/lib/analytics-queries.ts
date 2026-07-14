@@ -28,7 +28,10 @@ import {
   loadUomIndex,
   quantityToMetricTons,
 } from "./uom-convert";
-import { looksLikeProductQuery } from "./product-query";
+import {
+  looksLikeProductQuery,
+  matchesProductTerms,
+} from "./product-query";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1667,7 +1670,13 @@ export async function getPendingSauda(input?: {
 
   function matchesProduct(itemNo: string, name: string): boolean {
     if (!productTerm) return true;
-    return `${itemNo} ${name}`.toLowerCase().includes(productTerm);
+    const meta = itemMeta.get(itemNo);
+    return matchesProductTerms(
+      [itemNo, name, meta?.itemCategory, meta?.itemType]
+        .filter(Boolean)
+        .join(" "),
+      productTerm,
+    );
   }
 
   for (const line of linesPayload.value ?? []) {
@@ -2050,7 +2059,7 @@ export async function getCustomerProductSales(
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
-    return haystack.includes(productTerm);
+    return matchesProductTerms(haystack, productTerm);
   }
 
   if (posted.usePostedInvoices) {
@@ -2425,7 +2434,7 @@ export async function getBranchProductSales(
       .filter(Boolean)
       .join(" ")
       .toLowerCase();
-    return haystack.includes(productTerm);
+    return matchesProductTerms(haystack, productTerm);
   }
 
   if (!posted.usePostedInvoices) {
