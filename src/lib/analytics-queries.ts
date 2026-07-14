@@ -28,6 +28,7 @@ import {
   loadUomIndex,
   quantityToMetricTons,
 } from "./uom-convert";
+import { looksLikeProductQuery } from "./product-query";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1526,7 +1527,7 @@ export async function getPendingSauda(input?: {
   limit?: number;
 }): Promise<unknown> {
   const lineLimit = Math.min(input?.limit ?? 40, 100);
-  const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
+  let productTerm = (input?.productQuery ?? "").trim().toLowerCase();
 
   let customerNo = input?.customerNo?.trim() || undefined;
   let customerName = "";
@@ -1540,26 +1541,33 @@ export async function getPendingSauda(input?: {
     branchCode = branch.code;
   } else if (input?.query?.trim() && !customerNo) {
     const q = input.query.trim();
-    const looksLikeBranchCode = /^[A-Za-z]{1,3}$/.test(q) || /^(?:code|branch)\s+/i.test(q);
-    if (looksLikeBranchCode) {
-      const branch = resolveBranch({ query: q });
-      if (!("error" in branch)) {
-        branchCode = branch.code;
-      }
-    }
-    if (!branchCode) {
-      const resolved = await resolveCustomerNo({ query: q });
-      if ("error" in resolved) {
-        // Fallback: allow full branch names like "Bhairahawa Sales Depot"
+    if (!productTerm && looksLikeProductQuery(q)) {
+      productTerm = q.toLowerCase();
+    } else {
+      const looksLikeBranchCode =
+        /^[A-Za-z]{1,3}$/.test(q) || /^(?:code|branch)\s+/i.test(q);
+      if (looksLikeBranchCode) {
         const branch = resolveBranch({ query: q });
         if (!("error" in branch)) {
           branchCode = branch.code;
-        } else {
-          return resolved;
         }
-      } else {
-        customerNo = resolved.customerNo;
-        customerName = resolved.name;
+      }
+      if (!branchCode && !productTerm) {
+        const resolved = await resolveCustomerNo({ query: q });
+        if ("error" in resolved) {
+          const branch = resolveBranch({ query: q });
+          if (!("error" in branch)) {
+            branchCode = branch.code;
+          } else if (looksLikeProductQuery(q)) {
+            productTerm = q.toLowerCase();
+          } else {
+            // Last resort: treat as product filter so item names aren't "customer not found"
+            productTerm = q.toLowerCase();
+          }
+        } else {
+          customerNo = resolved.customerNo;
+          customerName = resolved.name;
+        }
       }
     }
   } else if (customerNo) {
@@ -1765,12 +1773,20 @@ export async function getPendingSauda(input?: {
   const totalPendingAmount = round(
     pendingLines.reduce((sum, row) => sum + row.pendingAmount, 0),
   );
+  const averageUnitPrice =
+    totalPendingQuantity > 0
+      ? round(totalPendingAmount / totalPendingQuantity)
+      : null;
+  const averagePricePerMT =
+    totalPendingQuantityMT > 0
+      ? round(totalPendingAmount / totalPendingQuantityMT)
+      : null;
 
   return {
     currency: "NPR",
     quantityUnit: "MT",
     displayNote:
-      "Pending Sauda = Locked sales orders with unshipped qty. Primary quantity is metric tons (MT) via item UOM→KG÷1000. Amount = pendingQuantity × unitPrice (order-line UOM). Non-weight items (PCS/SET/MTR) are skipped from MT totals.",
+      "Pending Sauda = Locked sales orders with unshipped qty. Primary quantity is metric tons (MT) via item UOM→KG÷1000. Amount = pendingQuantity × unitPrice (order-line UOM). averageUnitPrice = amount÷pending qty (order UOM); averagePricePerMT = amount÷pending MT. Pass productQuery for item filters (e.g. mustard cake) — never treat item names as customers. Non-weight items (PCS/SET/MTR) are skipped from MT totals.",
     basis:
       "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped. MT from uoms.qtyPerUnitofMeasure against item base KG.",
     filter: {
@@ -1786,6 +1802,8 @@ export async function getPendingSauda(input?: {
       totalPendingQuantityMT,
       totalPendingQuantity,
       totalPendingAmount,
+      averageUnitPrice,
+      averagePricePerMT,
       skippedNonWeightLines,
     },
     topItems: [...byItem.values()]
@@ -1798,6 +1816,14 @@ export async function getPendingSauda(input?: {
           : null,
         pendingQuantity: round(row.pendingQuantity),
         pendingAmount: round(row.pendingAmount),
+        averageUnitPrice:
+          row.pendingQuantity > 0
+            ? round(row.pendingAmount / row.pendingQuantity)
+            : null,
+        averagePricePerMT:
+          row.mtConvertible && row.pendingQuantityMT > 0
+            ? round(row.pendingAmount / row.pendingQuantityMT)
+            : null,
         lineCount: row.lineCount,
         orderCount: row.orderCount.size,
       }))
@@ -1983,9 +2009,10 @@ export async function getCustomerProductSales(
   const { period } = periodResult;
 
   const productTerm = (input?.productQuery ?? "").trim().toLowerCase();
-  const [itemsPayload, posted] = await Promise.all([
+  const [itemsPayload, posted, uomIndex] = await Promise.all([
     loadItems(),
     loadPostedInvoiceLinePayloads(),
+    loadUomIndex(),
   ]);
 
   const itemMeta = new Map<string, Item>();
@@ -2144,14 +2171,22 @@ export async function getCustomerProductSales(
   }
 
   const items = [...byItem.values()]
-    .map((row) => ({
-      itemNo: row.itemNo,
-      name: row.name,
-      salesIncludingTax: round(row.salesIncl),
-      salesExcludingTax: round(row.salesExcl),
-      quantityInvoiced: round(row.quantity),
-      lineCount: row.lineCount,
-    }))
+    .map((row) => {
+      const mt = quantityToMetricTons(uomIndex, row.itemNo, row.quantity);
+      return {
+        itemNo: row.itemNo,
+        name: row.name,
+        salesIncludingTax: round(row.salesIncl),
+        salesExcludingTax: round(row.salesExcl),
+        quantityInvoiced: round(row.quantity),
+        quantityInvoicedMT: mt.metricTons != null ? round(mt.metricTons) : null,
+        averagePricePerMTInclTax:
+          mt.metricTons && mt.metricTons !== 0
+            ? round(row.salesIncl / mt.metricTons)
+            : null,
+        lineCount: row.lineCount,
+      };
+    })
     .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax)
     .slice(0, limit);
 
@@ -2172,12 +2207,13 @@ export async function getCustomerProductSales(
 
   return {
     currency: "NPR",
+    quantityUnit: "MT",
     customerNo: resolved.customerNo,
     name: resolved.name,
     period: period.label,
     productQuery: productTerm || null,
     displayNote:
-      'Show totalSalesIncludingTax and salesIncludingTax only (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT (BC line.amount net after discount).',
+      "Primary quantity is quantityInvoicedMT (metric tons). Show totalSalesIncludingTax (Incl. VAT). Show salesExcludingTax only when user asks for excl VAT.",
     basis: posted.usePostedInvoices
       ? "Posted sales invoice lines for this customer: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount."
       : "Customer sales order lines in the filtered posting-date window (quantityInvoiced × unitPrice).",
@@ -2185,6 +2221,9 @@ export async function getCustomerProductSales(
     totalSalesIncludingTax: round(totalIncl),
     totalSalesExcludingTax: round(totalExcl),
     totalQuantityInvoiced: round(totalQuantity),
+    totalQuantityInvoicedMT: round(
+      items.reduce((sum, row) => sum + (row.quantityInvoicedMT ?? 0), 0),
+    ),
     matchedLineCount,
     items,
     _syncedAt: posted.syncedAt,
@@ -2363,9 +2402,10 @@ export async function getBranchProductSales(
   const currentFyStart = getCurrentFiscalYearStart();
   const fyLabel = currentFyStart ? fiscalYearLabel(currentFyStart) : null;
 
-  const [posted, itemsPayload] = await Promise.all([
+  const [posted, itemsPayload, uomIndex] = await Promise.all([
     loadPostedInvoiceLinePayloads(),
     loadItems(),
+    loadUomIndex(),
   ]);
 
   const itemMeta = new Map<string, Item>();
@@ -2505,29 +2545,42 @@ export async function getBranchProductSales(
   }
 
   const items = [...byItem.values()]
-    .map((row) => ({
-      itemNo: row.itemNo,
-      name: row.name,
-      quantityInvoiced: round(row.quantity),
-      salesIncludingTax: round(row.salesIncl),
-      salesExcludingTax: round(row.salesExcl),
-      lineCount: row.lineCount,
-    }))
+    .map((row) => {
+      const mt = quantityToMetricTons(uomIndex, row.itemNo, row.quantity);
+      return {
+        itemNo: row.itemNo,
+        name: row.name,
+        quantityInvoiced: round(row.quantity),
+        quantityInvoicedMT: mt.metricTons != null ? round(mt.metricTons) : null,
+        salesIncludingTax: round(row.salesIncl),
+        salesExcludingTax: round(row.salesExcl),
+        averagePricePerMTInclTax:
+          mt.metricTons && mt.metricTons !== 0
+            ? round(row.salesIncl / mt.metricTons)
+            : null,
+        lineCount: row.lineCount,
+      };
+    })
     .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
 
   return {
     currency: "NPR",
+    quantityUnit: "MT",
     branchCode: resolved.code,
     branchName: resolved.name,
     productQuery: productTerm || null,
     period: period.label,
     fiscalYear: wantsMonthly ? fyLabel : null,
-    displayNote: CUSTOMER_SALES_DISPLAY_NOTE,
+    displayNote:
+      "Primary quantity is quantityInvoicedMT (metric tons). Show salesIncludingTax (Incl. VAT).",
     basis:
       "Posted invoice lines filtered by branch accountabilityCenter and product keyword.",
     totalSalesIncludingTax: round(totalIncl),
     totalSalesExcludingTax: round(totalExcl),
     totalQuantityInvoiced: round(totalQty),
+    totalQuantityInvoicedMT: round(
+      items.reduce((sum, row) => sum + (row.quantityInvoicedMT ?? 0), 0),
+    ),
     matchedLineCount: matchedLines,
     items,
     byNepaliMonth:

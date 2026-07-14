@@ -3,6 +3,10 @@ import { getProductSales, getReceivablesAging } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
 import { getSalesByBranch, getBranchWiseSales, getPendingSauda } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
+import {
+  cleanProductQueryFragment,
+  looksLikeProductQuery,
+} from "./product-query";
 import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
@@ -107,40 +111,59 @@ function isPendingSaudaQuery(message: string): boolean {
   );
 }
 
-/** Pull customer / party name from "X pending sauda" style questions. */
-function extractCustomerQueryFromSaudaMessage(message: string): string | null {
-  let text = message
-    .replace(/\b(tell|show|give|get|list|check|what(?:'s| is)?|his|her|their|the)\b/gi, " ")
-    .replace(/\b(pending\s+sauda|sauda\s+pending|pending\s+(sales\s+)?orders?|unshipped)\b/gi, " ")
-    .replace(/\bsauda\b/gi, " ")
-    .replace(/\b(of|for|from|about)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+/** Pull customer / product filters from pending-sauda questions. */
+function parseSaudaMessage(message: string): {
+  customerQuery: string | null;
+  productQuery: string | null;
+  wantsAveragePrice: boolean;
+} {
+  const wantsAveragePrice =
+    /\b(average|avg)\s+(unit\s+)?price\b/i.test(message) ||
+    /\bprice\s+(in|for|of)\b/i.test(message);
 
-  if (!text || text.length < 3) return null;
-  if (/^(all|every|total|company|customers?)$/i.test(text)) return null;
-  return text;
+  const cleaned = cleanProductQueryFragment(message);
+  if (!cleaned || cleaned.length < 2) {
+    return { customerQuery: null, productQuery: null, wantsAveragePrice };
+  }
+  if (/^(all|every|total|company|customers?)$/i.test(cleaned)) {
+    return { customerQuery: null, productQuery: null, wantsAveragePrice };
+  }
+
+  if (looksLikeProductQuery(cleaned) || wantsAveragePrice) {
+    return {
+      customerQuery: null,
+      productQuery: cleaned,
+      wantsAveragePrice,
+    };
+  }
+
+  return {
+    customerQuery: cleaned,
+    productQuery: null,
+    wantsAveragePrice,
+  };
 }
 
 async function formatPendingSauda(message: string): Promise<string> {
-  const customerQuery = extractCustomerQueryFromSaudaMessage(message);
+  const { customerQuery, productQuery, wantsAveragePrice } =
+    parseSaudaMessage(message);
   const branch = !customerQuery
     ? resolveBranch({ query: message })
     : resolveBranch({ query: customerQuery });
   const branchCode =
     !customerQuery && !("error" in branch) ? branch.code : undefined;
-  // Prefer customer name when present; only use branch if no customer fragment.
   const useBranch =
-    !customerQuery && branchCode
+    !customerQuery && !productQuery && branchCode
       ? { branchCode }
       : customerQuery
         ? { query: customerQuery }
-        : branchCode
+        : branchCode && !productQuery
           ? { branchCode }
           : {};
 
   const data = (await getPendingSauda({
     ...useBranch,
+    productQuery: productQuery || undefined,
     limit: 40,
   })) as {
     error?: string;
@@ -149,6 +172,7 @@ async function formatPendingSauda(message: string): Promise<string> {
       customerNo?: string | null;
       customerName?: string | null;
       branchCode?: string | null;
+      productQuery?: string | null;
     };
     summary?: {
       ordersWithPending?: number;
@@ -157,6 +181,8 @@ async function formatPendingSauda(message: string): Promise<string> {
       totalPendingQuantityMT?: number;
       totalPendingAmount?: number;
       skippedNonWeightLines?: number;
+      averageUnitPrice?: number | null;
+      averagePricePerMT?: number | null;
     };
     topItems?: Array<{
       itemNo: string;
@@ -164,6 +190,8 @@ async function formatPendingSauda(message: string): Promise<string> {
       pendingQuantity: number;
       pendingQuantityMT?: number | null;
       pendingAmount: number;
+      averageUnitPrice?: number | null;
+      averagePricePerMT?: number | null;
     }>;
     topCustomers?: Array<{
       customerNo: string;
@@ -216,9 +244,11 @@ async function formatPendingSauda(message: string): Promise<string> {
   const companyLabel = getCompany(getActiveCompany()).displayName;
   const s = data.summary ?? {};
   const who =
-    data.filter?.customerName ||
-    data.filter?.customerNo ||
-    (data.filter?.branchCode ? `branch ${data.filter.branchCode}` : null);
+    data.filter?.productQuery
+      ? `product "${data.filter.productQuery}"`
+      : data.filter?.customerName ||
+        data.filter?.customerNo ||
+        (data.filter?.branchCode ? `branch ${data.filter.branchCode}` : null);
   const title = who
     ? `**Pending Sauda — ${who}**`
     : `**Pending Sauda (Locked orders, unshipped qty)**`;
@@ -236,19 +266,43 @@ async function formatPendingSauda(message: string): Promise<string> {
   const lines = [
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
-    `**Pending quantity: ${formatMetricTons(s.totalPendingQuantityMT)} MT** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
-    "",
+  ];
+
+  if (wantsAveragePrice || productQuery) {
+    lines.push(
+      `**Average price: ${formatAmount(s.averageUnitPrice ?? 0)} / order UOM** · **${formatAmount(s.averagePricePerMT ?? 0)} / MT**`,
+      `**Pending qty: ${formatMetricTons(s.totalPendingQuantityMT)} MT** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
+      "",
+    );
+  } else {
+    lines.push(
+      `**Pending quantity: ${formatMetricTons(s.totalPendingQuantityMT)} MT** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
+      "",
+    );
+  }
+
+  lines.push(
     "| Metric | Value |",
     "|---|---:|",
     `| Orders with pending qty | ${s.ordersWithPending ?? 0} |`,
     `| Pending lines | ${s.pendingLineCount ?? 0} |`,
     `| Total pending quantity | **${formatMetricTons(s.totalPendingQuantityMT)} MT** |`,
     `| Total pending amount | **${formatAmount(s.totalPendingAmount ?? 0)}** |`,
+  );
+
+  if (s.averageUnitPrice != null || s.averagePricePerMT != null) {
+    lines.push(
+      `| Average unit price (order UOM) | **${formatAmount(s.averageUnitPrice ?? 0)}** |`,
+      `| Average price per MT | **${formatAmount(s.averagePricePerMT ?? 0)}** |`,
+    );
+  }
+
+  lines.push(
     "",
     "Quantities are in **metric tons (MT)** — converted from item UOM → KG ÷ 1,000 (e.g. BAG/PKT/POUCH/QNT).",
     "Rule: `orderStatus = Locked` and `quantity − quantityShipped > 0`. Amount = pending qty × unit price.",
     "This is **not** customer outstanding / receivable balance.",
-  ];
+  );
 
   if (s.skippedNonWeightLines) {
     lines.push(
@@ -262,16 +316,16 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Top items",
       "",
-      "| Item | Pending (MT) | Amount (NPR) |",
-      "|---|---:|---:|",
-      ...data.topItems.slice(0, 10).map(
+      "| Item | Pending (MT) | Amount (NPR) | Avg / MT |",
+      "|---|---:|---:|---:|",
+      ...data.topItems.slice(0, 20).map(
         (row) =>
-          `| ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} | ${formatAmount(row.averagePricePerMT ?? 0)} |`,
       ),
     );
   }
 
-  if (!data.filter?.customerNo && data.topCustomers?.length) {
+  if (!data.filter?.customerNo && !productQuery && data.topCustomers?.length) {
     lines.push(
       "",
       "### Top customers",
@@ -290,11 +344,11 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Detail lines",
       "",
-      "| Order | Date | Customer | Item | Ordered (MT) | Shipped (MT) | Pending (MT) | Amount |",
-      "|---|---|---|---|---:|---:|---:|---:|",
+      "| Order | Date | Customer | Item | Ordered (MT) | Shipped (MT) | Pending (MT) | Unit price | Amount |",
+      "|---|---|---|---|---:|---:|---:|---:|---:|",
       ...data.lines.slice(0, 25).map(
         (row) =>
-          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.quantityMT)} | ${formatMetricTons(row.quantityShippedMT)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.quantityMT)} | ${formatMetricTons(row.quantityShippedMT)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.unitPrice ?? 0)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }
@@ -394,12 +448,16 @@ async function formatProductSalesList(message: string): Promise<string> {
     periodWarning?: string | null;
     totalSalesIncludingTax?: number;
     totalQuantityInvoiced?: number;
+    totalQuantityInvoicedMT?: number;
+    averagePricePerMTInclTax?: number | null;
     items?: Array<{
       itemNo: string;
       name: string;
       quantityInvoiced: number;
+      quantityInvoicedMT?: number | null;
       salesIncludingTax: number;
       averageUnitPriceInclTax?: number;
+      averagePricePerMTInclTax?: number | null;
     }>;
     _syncedAt?: string;
   };
@@ -424,16 +482,16 @@ async function formatProductSalesList(message: string): Promise<string> {
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `Period: **${data.period ?? "all synced dates"}**`,
-    `**Total sales (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty invoiced: ${formatNumber(data.totalQuantityInvoiced ?? 0)}**`,
+    `**Total sales (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty: ${formatMetricTons(data.totalQuantityInvoicedMT)} MT** · **Avg: ${formatAmount(data.averagePricePerMTInclTax ?? 0)} / MT**`,
     "",
-    "| # | Item | Qty invoiced | Sales (Incl. VAT) | Avg unit price |",
+    "| # | Item | Qty (MT) | Sales (Incl. VAT) | Avg NPR/MT |",
     "|---:|---|---:|---:|---:|",
     ...items.map(
       (row, index) =>
-        `| ${index + 1} | ${escapeCell(row.name || row.itemNo)} | ${formatNumber(row.quantityInvoiced)} | ${formatAmount(row.salesIncludingTax)} | ${formatAmount(row.averageUnitPriceInclTax ?? 0)} |`,
+        `| ${index + 1} | ${escapeCell(row.name || row.itemNo)} | ${formatMetricTons(row.quantityInvoicedMT)} | ${formatAmount(row.salesIncludingTax)} | ${formatAmount(row.averagePricePerMTInclTax ?? 0)} |`,
     ),
     "",
-    `_Listed all ${items.length} matching item(s) — not top 10 only._`,
+    `_Listed all ${items.length} matching item(s) in metric tons — not top 10 only._`,
   ];
 
   if (data.periodWarning) {

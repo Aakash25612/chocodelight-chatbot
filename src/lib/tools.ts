@@ -315,7 +315,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item in `items` (sorted by salesIncludingTax) — NEVER summarize as top 10; when the user says 'all items' or lists product sales by keyword, present the full `items` array. Primary: totalSalesIncludingTax / salesIncludingTax (amountIncludingVAT). REQUIRED: pass fiscalYearStart (e.g. 2082) when user says 'this year', YTD, or a Nepali fiscal year — without it you get ALL-TIME totals (not FY). Show salesExcludingTax only when user asks for excl VAT — that is BC line.amount (net after discount), not list-price lineAmountExclVAT.",
+      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item in items (sorted by salesIncludingTax) — NEVER summarize as top 10. Primary quantity is quantityInvoicedMT / totalQuantityInvoicedMT (metric tons via UOM→KG÷1000); averagePricePerMTInclTax = sales÷MT. Pass fiscalYearStart (e.g. 2082) when user says 'this year', YTD, or a Nepali fiscal year — without it you get ALL-TIME totals (not FY). Show salesExcludingTax only when user asks for excl VAT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -512,7 +512,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_pending_sauda",
     description:
-      "MANDATORY for any 'sauda' / 'pending sauda' question (e.g. 'Sri Kamdhenu Suppliers tell his pending sauda'). Locked sales orders where quantity − quantityShipped > 0. Primary quantity fields are metric tons (pendingQuantityMT / totalPendingQuantityMT). NEVER show bags/pcs/kg as the main qty — use MT. Amount = pendingQuantity × unitPrice. NEVER confuse with outstanding receivables or customer statement. Pass query=customer name when a party is named.",
+      "MANDATORY for any 'sauda' / 'pending sauda' question (e.g. 'Sri Kamdhenu Suppliers tell his pending sauda', 'MUSTARD CAKE average price in pending sauda'). Locked sales orders where quantity − quantityShipped > 0. Primary quantity fields are metric tons (pendingQuantityMT / totalPendingQuantityMT). averagePricePerMT / averageUnitPrice for average price questions. Pass productQuery for item names (mustard cake, oil) — NEVER pass item names as customer query. NEVER show bags/pcs/kg as the main qty — use MT. Amount = pendingQuantity × unitPrice. NEVER confuse with outstanding receivables.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

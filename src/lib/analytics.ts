@@ -1,4 +1,5 @@
 import { getMirror } from "./bc-mirror";
+import { loadUomIndex, quantityToMetricTons } from "./uom-convert";
 import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
@@ -1324,13 +1325,14 @@ export async function getProductSales(
   if ("error" in periodResult) return periodResult;
   const { period } = periodResult;
 
-  const [invoiceLinesPayload, crMemoLinesPayload, itemsPayload] =
+  const [invoiceLinesPayload, crMemoLinesPayload, itemsPayload, uomIndex] =
     await Promise.all([
       getMirror("salesInvoiceLines") as Promise<
         MirrorPayload<PostedInvoiceLine>
       >,
       getMirror("salesCrMemoLines") as Promise<MirrorPayload<PostedCrMemoLine>>,
       getMirror("items") as Promise<MirrorPayload<Item>>,
+      loadUomIndex(),
     ]);
 
   const usePostedInvoices =
@@ -1391,15 +1393,18 @@ export async function getProductSales(
       category: string;
       unitOfMeasureCode: string;
       quantityInvoiced: number;
+      quantityInvoicedMT: number;
       salesExcludingTax: number;
       salesIncludingTax: number;
       lineCount: number;
+      mtConvertible: boolean;
     }
   >();
 
   let totalSales = 0;
   let totalSalesIncludingTax = 0;
   let totalQuantity = 0;
+  let totalQuantityMT = 0;
   let matchedLines = 0;
   let earliest: string | null = null;
   let latest: string | null = null;
@@ -1420,6 +1425,13 @@ export async function getProductSales(
     totalSales += inputLine.salesExcl;
     totalSalesIncludingTax += inputLine.salesIncl;
     totalQuantity += inputLine.quantity;
+    const mt = quantityToMetricTons(
+      uomIndex,
+      inputLine.itemNo,
+      inputLine.quantity,
+      inputLine.unitOfMeasureCode,
+    );
+    if (mt.metricTons != null) totalQuantityMT += mt.metricTons;
     if (!earliest || inputLine.postingDate < earliest) {
       earliest = inputLine.postingDate;
     }
@@ -1433,13 +1445,20 @@ export async function getProductSales(
         itemNo: inputLine.itemNo,
         name: meta?.displayName ?? "",
         category: inputLine.category ?? meta?.itemCategory ?? "",
-        unitOfMeasureCode: inputLine.unitOfMeasureCode ?? "",
+        unitOfMeasureCode:
+          inputLine.unitOfMeasureCode ||
+          uomIndex.salesUnit.get(inputLine.itemNo) ||
+          "",
         quantityInvoiced: 0,
+        quantityInvoicedMT: 0,
         salesExcludingTax: 0,
         salesIncludingTax: 0,
         lineCount: 0,
+        mtConvertible: mt.convertible,
       };
     agg.quantityInvoiced += inputLine.quantity;
+    if (mt.metricTons != null) agg.quantityInvoicedMT += mt.metricTons;
+    else agg.mtConvertible = false;
     agg.salesExcludingTax += inputLine.salesExcl;
     agg.salesIncludingTax += inputLine.salesIncl;
     agg.lineCount += 1;
@@ -1509,6 +1528,9 @@ export async function getProductSales(
       category: row.category,
       unitOfMeasureCode: row.unitOfMeasureCode,
       quantityInvoiced: round(row.quantityInvoiced),
+      quantityInvoicedMT: row.mtConvertible
+        ? round(row.quantityInvoicedMT)
+        : null,
       salesIncludingTax: round(row.salesIncludingTax),
       salesExcludingTax: round(row.salesExcludingTax),
       averageUnitPriceInclTax:
@@ -1519,6 +1541,14 @@ export async function getProductSales(
         row.quantityInvoiced > 0
           ? round(row.salesExcludingTax / row.quantityInvoiced)
           : 0,
+      averagePricePerMTInclTax:
+        row.mtConvertible && row.quantityInvoicedMT > 0
+          ? round(row.salesIncludingTax / row.quantityInvoicedMT)
+          : null,
+      averagePricePerMT:
+        row.mtConvertible && row.quantityInvoicedMT > 0
+          ? round(row.salesExcludingTax / row.quantityInvoicedMT)
+          : null,
       lineCount: row.lineCount,
     }))
     .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
@@ -1533,8 +1563,9 @@ export async function getProductSales(
         ? "No date filter applied — totals are ALL synced history, not this Nepali fiscal year. Re-call with fiscalYearStart for FY-scoped totals."
         : null,
     itemNumbers: explicitItems.length ? explicitItems : null,
+    quantityUnit: "MT",
     displayNote:
-      'List EVERY item in `items` (full table) — never top 10 only. Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). Show salesExcludingTax / totalSalesExcludingTax ONLY when the user explicitly asks for excl VAT or net amount — that field is BC line.amount (net revenue after discount), NOT lineAmountExclVAT (list price).',
+      'List EVERY item in items (full table) — never top 10 only. Primary quantity is quantityInvoicedMT / totalQuantityInvoicedMT (metric tons). Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). averagePricePerMTInclTax = sales ÷ MT. Show salesExcludingTax ONLY when the user explicitly asks for excl VAT.',
     itemCount: items.length,
     basis: usePostedInvoices
       ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount. Never use lineAmountExclVAT (pre-discount list price)."
@@ -1549,10 +1580,17 @@ export async function getProductSales(
     totalSalesIncludingTax: round(totalSalesIncludingTax),
     totalSalesExcludingTax: round(totalSales),
     totalQuantityInvoiced: round(totalQuantity),
+    totalQuantityInvoicedMT: round(totalQuantityMT),
     averageUnitPriceInclTax:
       totalQuantity > 0 ? round(totalSalesIncludingTax / totalQuantity) : 0,
     averageUnitPrice:
       totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
+    averagePricePerMTInclTax:
+      totalQuantityMT > 0
+        ? round(totalSalesIncludingTax / totalQuantityMT)
+        : null,
+    averagePricePerMT:
+      totalQuantityMT > 0 ? round(totalSales / totalQuantityMT) : null,
     matchedLineCount: matchedLines,
     items,
     _syncedAt:

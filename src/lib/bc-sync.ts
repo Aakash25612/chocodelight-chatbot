@@ -65,7 +65,6 @@ function readEntitiesForCompany(_company: CompanyKey): {
   return [...BASE_READ_ENTITIES, ...INVOICE_EXTRA_ENTITIES];
 }
 
-const MAX_INLINE_PAYLOAD_BYTES = 8 * 1024 * 1024;
 const MIRROR_CHUNK_SIZE = 5000;
 
 type LedgerEntry = {
@@ -161,10 +160,6 @@ function compactMirrorPayload(type: MirrorEntity, payload: unknown): unknown {
   };
 }
 
-function payloadBytes(payload: unknown): number {
-  return Buffer.byteLength(JSON.stringify(payload));
-}
-
 async function upsertMirrorPayload(input: {
   company: CompanyKey;
   type: MirrorEntity;
@@ -174,11 +169,7 @@ async function upsertMirrorPayload(input: {
   const supabase = getSupabaseAdmin();
   const payload = input.payload as { value?: unknown[] };
 
-  if (
-    Array.isArray(payload.value) &&
-    payload.value.length > MIRROR_CHUNK_SIZE &&
-    payloadBytes(payload) > MAX_INLINE_PAYLOAD_BYTES
-  ) {
+  if (Array.isArray(payload.value) && payload.value.length > MIRROR_CHUNK_SIZE) {
     const chunks: Array<{ value: unknown[] }> = [];
     for (let i = 0; i < payload.value.length; i += MIRROR_CHUNK_SIZE) {
       chunks.push({ value: payload.value.slice(i, i + MIRROR_CHUNK_SIZE) });
@@ -211,10 +202,10 @@ async function upsertMirrorPayload(input: {
       synced_at: input.syncedAt,
     }));
 
-    for (let i = 0; i < rows.length; i += 25) {
+    for (let i = 0; i < rows.length; i += 10) {
       const { error } = await supabase
         .from("bc_mirror_chunks")
-        .upsert(rows.slice(i, i + 25));
+        .upsert(rows.slice(i, i + 10));
       if (error) throw error;
     }
 
