@@ -179,15 +179,21 @@ export function planQuery(
     );
   }
 
+  const rankingBranchCode = extractBranchCode(message);
   if (
     /\b(customer|customers|party|parties)\b/.test(normalized) &&
-    /\b(sale|sales|revenue|turnover)\b/.test(normalized) &&
-    /\b(top|first|highest|largest|most|amount[\s-]*wise|rank)\b/.test(normalized)
+    /\b(top|first|highest|largest|most|amount[\s-]*wise|rank)\b/.test(normalized) &&
+    (/\b(sale|sales|revenue|turnover)\b/.test(normalized) ||
+      (rankingBranchCode != null && /\b(branch|depo(?:t)?)\b/.test(normalized)))
   ) {
     return normalizedPlan(
       "top_customer_sales",
       "get_top_customers",
-      { limit: rankingLimit(message), rankBy: "invoice_sales" },
+      {
+        limit: rankingLimit(message),
+        rankBy: "invoice_sales",
+        branchCode: rankingBranchCode ?? undefined,
+      },
       message,
       referenceDate,
     );

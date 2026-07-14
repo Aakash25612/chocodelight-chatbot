@@ -75,9 +75,9 @@ export async function getDirectResponse(
   company?: string,
 ): Promise<string | null> {
   const normalized = message.trim().toLowerCase();
-  const plan = planQuery(message);
 
   return runWithCompany(normalizeCompanyKey(company), async () => {
+    const plan = planQuery(message);
     if (isListAllCustomers(normalized)) {
       return listAllCustomers();
     }
@@ -594,8 +594,16 @@ function extractRankingLimit(message: string, fallback = 5): number {
 async function formatTopCustomerSales(message: string): Promise<string> {
   const limit = extractRankingLimit(message);
   const periodArgs = periodArgsFromProductSalesMessage(message);
+  const resolvedBranch = /\b(branch|depo(?:t)?)\b/i.test(message)
+    ? resolveBranch({ query: message })
+    : null;
+  const branchCode =
+    resolvedBranch && !("error" in resolvedBranch)
+      ? resolvedBranch.code
+      : undefined;
   const data = (await getTopCustomers({
     limit,
+    branchCode,
     rankBy: "invoice_sales",
     ...periodArgs,
   })) as {
@@ -607,6 +615,10 @@ async function formatTopCustomerSales(message: string): Promise<string> {
       month?: number | null;
       monthName?: string | null;
     };
+    branch?: {
+      branchCode: string;
+      branchName: string;
+    } | null;
     customers?: Array<{
       customerNo: string;
       name: string;
@@ -631,11 +643,14 @@ async function formatTopCustomerSales(message: string): Promise<string> {
   const customers = data.customers ?? [];
 
   if (customers.length === 0) {
-    return `No posted customer invoice sales found for ${period}.`;
+    return `No posted customer invoice sales found for ${data.branch?.branchName ?? companyLabel} in ${period}.`;
   }
 
+  const scope = data.branch
+    ? `${data.branch.branchName} (code ${data.branch.branchCode})`
+    : companyLabel;
   return [
-    `**Top ${customers.length} customers by total sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    `**Top ${customers.length} customers by total sales — ${scope}** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `Period: **${period}** · Amount basis: **Incl. VAT**`,
     "",

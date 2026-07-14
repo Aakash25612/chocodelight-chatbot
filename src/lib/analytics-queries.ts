@@ -417,6 +417,7 @@ type CustomerInvoiceSalesAgg = {
 async function aggregateCustomersFromPostedInvoices(options: {
   names: Map<string, string>;
   matches?: (postingDate: string) => boolean;
+  branchCode?: string;
 }): Promise<Map<string, CustomerInvoiceSalesAgg> | null> {
   const posted = await loadPostedInvoiceLinePayloads();
   if (!posted.usePostedInvoices) return null;
@@ -440,6 +441,11 @@ async function aggregateCustomersFromPostedInvoices(options: {
   for (const line of posted.invoiceLines) {
     const postingDate = String(line.postingDate ?? "");
     if (options.matches && !options.matches(postingDate)) continue;
+    const branchCode =
+      normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+      branchCodeFromDocument(line.documentNo) ||
+      "";
+    if (options.branchCode && branchCode !== options.branchCode) continue;
     const customerNo = String(line.sellToCustomerNo ?? "").trim();
     if (!customerNo) continue;
     const agg = upsert(customerNo);
@@ -452,6 +458,11 @@ async function aggregateCustomersFromPostedInvoices(options: {
   for (const line of posted.crMemoLines) {
     const postingDate = String(line.postingDate ?? "");
     if (options.matches && !options.matches(postingDate)) continue;
+    const branchCode =
+      normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+      branchCodeFromDocument(line.documentNo) ||
+      "";
+    if (options.branchCode && branchCode !== options.branchCode) continue;
     const customerNo = String(line.sellToCustomerNo ?? "").trim();
     if (!customerNo) continue;
     const agg = upsert(customerNo);
@@ -659,10 +670,20 @@ export async function getTopCustomers(input?: {
   month?: number;
   fiscalYearStart?: number;
   limit?: number;
+  branchCode?: string;
   rankBy?: "invoice_sales" | "balance" | "overdue" | "lifetime_master";
 }): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 15, 50);
   const rankBy = input?.rankBy ?? "invoice_sales";
+  const branch = input?.branchCode
+    ? resolveBranch({ branchCode: input.branchCode })
+    : null;
+  if (branch && "error" in branch) return branch;
+  if (branch && rankBy !== "invoice_sales") {
+    return {
+      error: "Branch filtering is available only for invoice-sales rankings.",
+    };
+  }
 
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
@@ -742,6 +763,7 @@ export async function getTopCustomers(input?: {
 
   const byCustomerFromInvoices = await aggregateCustomersFromPostedInvoices({
     names,
+    branchCode: branch?.code,
     matches: (postingDate) => {
       if (input?.fiscalYearStart) {
         return postingDateInNepaliFy(postingDate, input.fiscalYearStart);
@@ -770,11 +792,22 @@ export async function getTopCustomers(input?: {
         month: input?.month ?? null,
         monthName: input?.month ? monthName(input.month) : null,
       },
+      branch: branch
+        ? { branchCode: branch.code, branchName: branch.name }
+        : null,
       basis:
-        "Posted sales invoice lines (amountIncludingVAT) minus credit memos, grouped by customer.",
+        "Posted sales invoice lines (amountIncludingVAT) minus credit memos, optionally filtered by accountability-center branch and grouped by customer.",
       customers: ranked,
       topCustomer: ranked[0] ?? null,
       _syncedAt: (await loadPostedInvoiceLinePayloads()).syncedAt,
+    };
+  }
+
+  if (branch) {
+    return {
+      error:
+        "Branch customer ranking requires synced posted invoice lines; ledger entries do not contain branch attribution.",
+      branch: { branchCode: branch.code, branchName: branch.name },
     };
   }
 

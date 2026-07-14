@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { planQuery } from "../src/lib/query-intent";
+import { runWithCompany } from "../src/lib/company-context";
 import {
   detectCalendarPreference,
   normalizeToolArgs,
@@ -84,5 +85,18 @@ test("average selling price wording is removed from product filters", () => {
   if (plan.path === "deterministic") {
     assert.equal(plan.tool, "get_product_sales");
     assert.equal(plan.args.query, "mustard cake");
+  }
+});
+
+test("top customers in a named branch routes to branch-filtered sales", () => {
+  const plan = runWithCompany("saurabhfood", () =>
+    planQuery("top 10 customer in Biratnagar branch", REFERENCE_DATE),
+  );
+  assert.equal(plan.path, "deterministic");
+  if (plan.path === "deterministic") {
+    assert.equal(plan.tool, "get_top_customers");
+    assert.equal(plan.args.limit, 10);
+    assert.equal(plan.args.branchCode, "B");
+    assert.equal(plan.args.fiscalYearStart, 2082);
   }
 });

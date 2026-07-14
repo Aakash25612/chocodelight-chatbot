@@ -366,7 +366,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_top_customers",
     description:
-      "Rank customers by invoice sales (posted invoice lines when synced), balance, overdue, or lifetime master sales. Primary: salesIncludingTax (Incl. VAT). Use fiscalYearStart for Nepali FY (e.g. 2082 for FY 2082/83). For outstanding ranking use get_outstanding_receivables.",
+      "Rank customers by invoice sales, optionally within one branch via branchCode. Use this for 'top 10 customers in Biratnagar branch'. Primary: salesIncludingTax (Incl. VAT). Use fiscalYearStart for Nepali FY. For outstanding ranking use get_outstanding_receivables.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -377,6 +377,10 @@ export const toolDeclarations: FunctionDeclaration[] = [
         },
         year: { type: SchemaType.NUMBER, description: "Optional AD year filter." },
         month: { type: SchemaType.NUMBER, description: "Optional AD month 1-12." },
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Optional accountability-center branch code, e.g. B.",
+        },
         limit: { type: SchemaType.NUMBER, description: "Default 15." },
         rankBy: {
           type: SchemaType.STRING,
@@ -1161,6 +1165,8 @@ export async function executeTool(
           month: typeof args.month === "number" ? args.month : undefined,
           allTime: args.allTime === true,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          branchCode:
+            typeof args.branchCode === "string" ? args.branchCode : undefined,
           rankBy: args.rankBy as
             | "invoice_sales"
             | "balance"
