@@ -16,7 +16,7 @@ export function looksLikeProductQuery(text: string): boolean {
     return true;
   }
   if (
-    /\b(mustard\s+cake|mustard\s+oil|rapeseed|tori\s+pina|chocolate\s+dip|bigul|gyan)\b/.test(
+    /\b(mustard\s+cake|mustard\s+oil|rapeseed|tori\s+pina|chocolate\s+dip|bigul|gyan|sawa\s+rice|rice)\b/.test(
       t,
     )
   ) {

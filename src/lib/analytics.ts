@@ -340,7 +340,7 @@ export async function getSalesSummary(): Promise<unknown> {
  */
 export type ReceivablesAgeBy = "due_date" | "posting_date";
 
-export type ReceivablesAgingInput = {
+export type ReceivablesAgingInput = DatePeriodInput & {
   minDays?: number;
   /** Default due_date for overdue questions; posting_date for "X days since invoice". */
   ageBy?: ReceivablesAgeBy;
@@ -404,6 +404,9 @@ export async function getReceivablesAging(
     typeof input === "number" ? { minDays: input } : (input ?? {});
   const minDays = options.minDays;
   const ageBy = options.ageBy ?? "due_date";
+  const periodResult = periodFromInput(options);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
 
   const customerFilter = await resolveCustomerForFilter({
     query: options.query,
@@ -465,6 +468,7 @@ export async function getReceivablesAging(
   }> = [];
 
   for (const entry of ledgerPayload.value ?? []) {
+    if (!period.matches(entry.postingDate)) continue;
     if (!entry.open) continue;
     const remaining = Number(entry.remainingAmount ?? 0);
     if (remaining <= 0) continue;
@@ -623,7 +627,7 @@ export async function getReceivablesAging(
 
   return {
     currency: "NPR",
-    asOf: now.toISOString().slice(0, 10),
+    period: period.label,
     ageBy,
     basis:
       ageBy === "posting_date"
@@ -721,11 +725,16 @@ export async function searchCustomers(query: string): Promise<unknown> {
  * Customer payment / invoice statement from ledger entries.
  * Resolve by customerNo, customer name search, or a known document number.
  */
-export async function getCustomerStatement(input?: {
-  customerNo?: string;
-  query?: string;
-  documentNo?: string;
-}): Promise<unknown> {
+export async function getCustomerStatement(
+  input?: {
+    customerNo?: string;
+    query?: string;
+    documentNo?: string;
+  } & DatePeriodInput,
+): Promise<unknown> {
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
   const [ledgerPayload, customersPayload] = await Promise.all([
     loadLedger(),
     loadCustomersPayload(),
@@ -784,7 +793,9 @@ export async function getCustomerStatement(input?: {
   const entries = (ledgerPayload.value ?? [])
     .filter(
       (entry) =>
-        entry.customerNo === customerNo || entry.sellToCustomerNo === customerNo,
+        (entry.customerNo === customerNo ||
+          entry.sellToCustomerNo === customerNo) &&
+        period.matches(entry.postingDate),
     )
     .sort((a, b) =>
       String(b.postingDate ?? "").localeCompare(String(a.postingDate ?? "")),
@@ -853,11 +864,12 @@ export async function getCustomerStatement(input?: {
 
   return {
     currency: "NPR",
+    period: period.label,
     customerNo,
     name: customer.displayName,
     phone: customer.phoneNumber,
-    masterBalance: round(Number(customer.balance ?? 0)),
-    masterOverdue: round(Number(customer.overdueAmount ?? 0)),
+    masterBalance: round(openBalance),
+    masterOverdue: round(overdueBalance),
     summary: {
       totalInvoiced: round(totalInvoiced),
       totalPaid: round(totalPaid),
@@ -941,7 +953,6 @@ export async function getNepaliMonthlySales(
       displayNote:
         'Present salesIncludingTax and yearToDate.salesIncludingTax (Incl. VAT). Show salesExcludingTax / vatAmount only when user asks.',
       asOf: {
-        ad: (fromInvoices.latestInFy ?? new Date()).toISOString().slice(0, 10),
         bs: asOfBs
           ? `${asOfBs.year}/${String(asOfBs.month + 1).padStart(2, "0")}/${String(asOfBs.date).padStart(2, "0")} (${asOfBs.monthName})`
           : null,
@@ -1032,7 +1043,6 @@ export async function getNepaliMonthlySales(
     fiscalYear: fiscalYearLabel(startYear),
     isCurrentFiscalYear,
     asOf: {
-      ad: (latestInFy ?? new Date()).toISOString().slice(0, 10),
       bs: asOfBs
         ? `${asOfBs.year}/${String(asOfBs.month + 1).padStart(2, "0")}/${String(asOfBs.date).padStart(2, "0")} (${asOfBs.monthName})`
         : null,
@@ -1328,6 +1338,8 @@ export async function getProductSales(
   input?: {
     query?: string;
     itemNumbers?: string[];
+    /** Include only posted sales credit-memo lines and report returned values positively. */
+    returnsOnly?: boolean;
   } & DatePeriodInput,
 ): Promise<unknown> {
   const periodResult = periodFromInput(input);
@@ -1475,7 +1487,7 @@ export async function getProductSales(
   }
 
   if (usePostedInvoices) {
-    for (const line of invoiceLinesPayload.value ?? []) {
+    if (!input?.returnsOnly) for (const line of invoiceLinesPayload.value ?? []) {
       const itemNo = String(line.itemNo ?? "");
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
@@ -1499,12 +1511,13 @@ export async function getProductSales(
       const quantity = Number(line.quantity ?? 0);
       if (!itemNo || quantity <= 0 || !matchesItem(itemNo)) continue;
 
-      const salesIncl = -Math.abs(postedLineSalesIncl(line));
-      const salesExcl = -Math.abs(postedLineSalesExcl(line));
+      const direction = input?.returnsOnly ? 1 : -1;
+      const salesIncl = direction * Math.abs(postedLineSalesIncl(line));
+      const salesExcl = direction * Math.abs(postedLineSalesExcl(line));
 
       addLine({
         itemNo,
-        quantity: -quantity,
+        quantity: direction * quantity,
         salesExcl,
         salesIncl,
         postingDate: String(line.postingDate ?? ""),
@@ -1564,12 +1577,13 @@ export async function getProductSales(
 
   return {
     currency: "NPR",
+    transactionType: input?.returnsOnly ? "sales_returns" : "net_sales",
     query: query || null,
     period: period.label,
-    isAllTime: period.label === "all synced dates",
+    isAllTime: period.label === "all synced history",
     periodWarning:
-      period.label === "all synced dates"
-        ? "No date filter applied — totals are ALL synced history, not this Nepali fiscal year. Re-call with fiscalYearStart for FY-scoped totals."
+      period.label === "all synced history"
+        ? "Explicit all-time scope: totals include all synced history."
         : null,
     itemNumbers: explicitItems.length ? explicitItems : null,
     quantityUnit: "MT",

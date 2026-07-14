@@ -567,26 +567,57 @@ export async function getTopCustomersByMonth(input?: {
 }
 
 /** Outstanding receivables ranked by total balance with overdue vs not-yet-due split. */
-export async function getOutstandingReceivables(input?: {
-  limit?: number;
-}): Promise<unknown> {
+export async function getOutstandingReceivables(
+  input?: { limit?: number } & DatePeriodInput,
+): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 15, 50);
-  const customersPayload = await loadCustomers();
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
+  const [customersPayload, ledgerPayload] = await Promise.all([
+    loadCustomers(),
+    loadLedger(),
+  ]);
   if (customersPayload.error) return { error: customersPayload.error };
-  const customerSource = (customersPayload as { source?: string }).source;
+  if (ledgerPayload.error) return { error: ledgerPayload.error };
 
-  const ranked = (customersPayload.value ?? [])
-    .map((customer) => {
-      const balance = round(Number(customer.balance ?? 0));
-      const overdueAmount = round(Number(customer.overdueAmount ?? 0));
-      return {
-        customerNo: customer.number,
-        name: customer.displayName,
-        balance,
-        overdueAmount,
-        notYetDueAmount: round(Math.max(0, balance - overdueAmount)),
-      };
-    })
+  const names = new Map(
+    (customersPayload.value ?? [])
+      .filter((customer) => customer.number)
+      .map((customer) => [customer.number!, customer.displayName ?? ""]),
+  );
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const byCustomer = new Map<
+    string,
+    { customerNo: string; name: string; balance: number; overdueAmount: number }
+  >();
+
+  for (const entry of ledgerPayload.value ?? []) {
+    if (!period.matches(entry.postingDate)) continue;
+    const remaining = Number(entry.remainingAmount ?? 0);
+    if (remaining <= 0 || entry.open === false) continue;
+    const customerNo = String(entry.customerNo ?? entry.sellToCustomerNo ?? "");
+    if (!customerNo) continue;
+    const row = byCustomer.get(customerNo) ?? {
+      customerNo,
+      name: names.get(customerNo) ?? "",
+      balance: 0,
+      overdueAmount: 0,
+    };
+    row.balance += remaining;
+    if (entry.dueDate && entry.dueDate.slice(0, 10) < todayKey) {
+      row.overdueAmount += remaining;
+    }
+    byCustomer.set(customerNo, row);
+  }
+
+  const ranked = [...byCustomer.values()]
+    .map((row) => ({
+      ...row,
+      balance: round(row.balance),
+      overdueAmount: round(row.overdueAmount),
+      notYetDueAmount: round(Math.max(0, row.balance - row.overdueAmount)),
+    }))
     .filter((row) => row.balance > 0)
     .sort((a, b) => b.balance - a.balance);
 
@@ -602,12 +633,10 @@ export async function getOutstandingReceivables(input?: {
 
   return {
     currency: "NPR",
-    asOf: new Date().toISOString().slice(0, 10),
+    period: period.label,
     rankBy: "balance",
     basis:
-      customerSource === "derived_mr_ledger"
-        ? "Derived customer balances from open ledger remaining amounts; names from MR records. overdueAmount = open entries past due date."
-        : "Customer master balance (matches ERP/Power BI outstanding report). overdueAmount = past due; notYetDueAmount = owed but payment deadline not reached.",
+      "Open customer-ledger remaining amounts posted within the selected Nepali FY; overdueAmount is past due today.",
     totals: { totalOutstanding, totalOverdue, totalNotYetDue },
     customerCount: ranked.length,
     customers: ranked.slice(0, limit).map((row, index) => ({
@@ -618,12 +647,13 @@ export async function getOutstandingReceivables(input?: {
           ? Math.round((row.balance / totalOutstanding) * 1000) / 10
           : 0,
     })),
-    _syncedAt: customersPayload._syncedAt,
+    _syncedAt: ledgerPayload._syncedAt ?? customersPayload._syncedAt,
   };
 }
 
 /** Top customers with flexible period and ranking. */
 export async function getTopCustomers(input?: {
+  allTime?: boolean;
   year?: number;
   month?: number;
   fiscalYearStart?: number;
@@ -908,31 +938,25 @@ export async function getTopCustomersByNepaliMonth(input?: {
 }
 
 /** Sales totals and monthly breakdown for one customer (posted invoice lines when synced). */
-export async function getCustomerSales(input?: {
-  customerNo?: string;
-  query?: string;
-  year?: number;
-  month?: number;
-  fiscalYearStart?: number;
-}): Promise<unknown> {
+export async function getCustomerSales(
+  input?: {
+    customerNo?: string;
+    query?: string;
+  } & DatePeriodInput,
+): Promise<unknown> {
   const resolved = await resolveCustomerNo(input);
   if ("error" in resolved) return resolved;
 
+  const effectivePeriod = withDefaultNepaliFiscalYear(input);
+  const periodResult = periodFromInput(effectivePeriod);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
   const posted = await loadPostedInvoiceLinePayloads();
   const customerNo = resolved.customerNo;
-  const fiscalYearStart = input?.fiscalYearStart;
+  const fiscalYearStart = effectivePeriod.fiscalYearStart;
 
   function matchesFilter(postingDate: string): boolean {
-    const date = parseDate(postingDate);
-    if (!date) return false;
-    if (fiscalYearStart) {
-      const fy = getNepaliFiscalYear(date);
-      return fy?.startYear === fiscalYearStart;
-    }
-    if (input?.year || input?.month) {
-      return inAdPeriod(date, input.year, input.month);
-    }
-    return true;
+    return period.matches(postingDate);
   }
 
   if (posted.usePostedInvoices) {
@@ -1002,9 +1026,10 @@ export async function getCustomerSales(input?: {
       customerNo,
       name: resolved.name,
       period: {
-        fiscalYearStart: input?.fiscalYearStart ?? null,
-        fiscalYear: input?.fiscalYearStart
-          ? fiscalYearLabel(input.fiscalYearStart)
+        label: period.label,
+        fiscalYearStart: fiscalYearStart ?? null,
+        fiscalYear: fiscalYearStart
+          ? fiscalYearLabel(fiscalYearStart)
           : null,
         year: input?.year ?? "all_synced_years",
         month: input?.month ?? null,
@@ -1039,13 +1064,7 @@ export async function getCustomerSales(input?: {
   for (const entry of entries) {
     const date = parseDate(entry.postingDate);
     if (!date) continue;
-    if (input?.fiscalYearStart) {
-      const fy = getNepaliFiscalYear(date);
-      if (!fy || fy.startYear !== input.fiscalYearStart) continue;
-    }
-    if (input?.year || input?.month) {
-      if (!inAdPeriod(date, input.year, input.month)) continue;
-    }
+    if (!period.matches(entry.postingDate)) continue;
 
     const sales = Number(entry.salesLcy ?? 0);
     totalSales += sales;
@@ -1076,7 +1095,8 @@ export async function getCustomerSales(input?: {
     customerNo,
     name: resolved.name,
     period: {
-      fiscalYearStart: input?.fiscalYearStart ?? null,
+      label: period.label,
+      fiscalYearStart: fiscalYearStart ?? null,
       year: input?.year ?? "all_synced_years",
       month: input?.month ?? null,
     },
@@ -1527,14 +1547,19 @@ export async function getCategorySales(
  * Pending Sauda: Locked sales orders with unshipped quantity.
  * Rule: orderStatus = Locked AND (quantity - quantityShipped) > 0.
  */
-export async function getPendingSauda(input?: {
-  query?: string;
-  customerNo?: string;
-  branchCode?: string;
-  productQuery?: string;
-  limit?: number;
-}): Promise<unknown> {
+export async function getPendingSauda(
+  input?: {
+    query?: string;
+    customerNo?: string;
+    branchCode?: string;
+    productQuery?: string;
+    limit?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
   const lineLimit = Math.min(input?.limit ?? 40, 100);
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
   let productTerm = (input?.productQuery ?? "").trim().toLowerCase();
 
   let customerNo = input?.customerNo?.trim() || undefined;
@@ -1601,8 +1626,15 @@ export async function getPendingSauda(input?: {
   }
 
   const lockedOrders = new Map<string, SalesOrder>();
+  let skippedMissingPostingDate = 0;
   for (const order of ordersPayload.value ?? []) {
     if (String(order.orderStatus ?? "").toLowerCase() !== "locked") continue;
+    const postingDate = String(order.postingDate ?? "");
+    if (!postingDate) {
+      skippedMissingPostingDate += 1;
+      continue;
+    }
+    if (!period.matches(postingDate)) continue;
     const no = String(order.number ?? "").trim();
     if (!no) continue;
     if (customerNo && order.customerNumber !== customerNo) continue;
@@ -1799,6 +1831,8 @@ export async function getPendingSauda(input?: {
   return {
     currency: "NPR",
     quantityUnit: "MT",
+    period: period.label,
+    dataQuality: { skippedMissingPostingDate },
     displayNote:
       "Pending Sauda = Locked sales orders with unshipped qty. Primary quantity is metric tons (MT) via item UOM→KG÷1000. Amount = pendingQuantity × unitPrice (order-line UOM). averageUnitPrice = amount÷pending qty (order UOM); averagePricePerMT = amount÷pending MT. Pass productQuery for item filters (e.g. mustard cake) — never treat item names as customers. Non-weight items (PCS/SET/MTR) are skipped from MT totals.",
     basis:
@@ -3280,15 +3314,19 @@ export async function getSalesByBranch(
 }
 
 /** MR (money receipt) records — search or period summary. */
-export async function getMrRecords(input?: {
-  query?: string;
-  customerNo?: string;
-  branchCode?: string;
-  year?: number;
-  status?: string;
-  limit?: number;
-}): Promise<unknown> {
+export async function getMrRecords(
+  input?: {
+    query?: string;
+    customerNo?: string;
+    branchCode?: string;
+    status?: string;
+    limit?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
   const limit = Math.min(input?.limit ?? 40, 100);
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
   let customerNo = input?.customerNo;
   let customerName = "";
   let branchCode: string | null = input?.branchCode?.trim()
@@ -3343,9 +3381,8 @@ export async function getMrRecords(input?: {
     if (statusFilter && !statusMatchesFilter(row.status, statusFilter)) {
       return false;
     }
-    const date = parseDate(row.receivedEnglishiDate ?? row.clearedEnglishiDate);
-    if (input?.year && date && date.getFullYear() !== input.year) return false;
-    return true;
+    const dateKey = row.receivedEnglishiDate ?? row.clearedEnglishiDate;
+    return period.matches(dateKey);
   });
 
   const totalAmount = round(
@@ -3402,7 +3439,7 @@ export async function getMrRecords(input?: {
       branchCode,
       branchName: branchCode ? branchNameForCode(branchCode) : null,
       status: statusFilter,
-      year: input?.year ?? null,
+      period: period.label,
     },
     displayNote:
       statusFilter === "Cheque Received"
@@ -3423,12 +3460,14 @@ export async function getMrRecords(input?: {
 }
 
 /** Cheque in hand = MR status Cheque Received (not deposited / not cleared). */
-export async function getChequeInHand(input?: {
-  query?: string;
-  customerNo?: string;
-  branchCode?: string;
-  limit?: number;
-}): Promise<unknown> {
+export async function getChequeInHand(
+  input?: {
+    query?: string;
+    customerNo?: string;
+    branchCode?: string;
+    limit?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
   return getMrRecords({
     ...input,
     status: "Cheque Received",
@@ -3755,12 +3794,17 @@ export async function compareTopCustomersYearly(input?: {
 }
 
 /** Collection / DSO-style metrics from open invoices and recent sales. */
-export async function getCollectionMetrics(input?: {
-  customerNo?: string;
-  query?: string;
-  lookbackDays?: number;
-}): Promise<unknown> {
+export async function getCollectionMetrics(
+  input?: {
+    customerNo?: string;
+    query?: string;
+    lookbackDays?: number;
+  } & DatePeriodInput,
+): Promise<unknown> {
   const lookbackDays = input?.lookbackDays ?? 90;
+  const periodResult = periodFromInput(input);
+  if ("error" in periodResult) return periodResult;
+  const { period } = periodResult;
   let customerNo = input?.customerNo;
   let customerName: string | undefined;
 
@@ -3787,6 +3831,7 @@ export async function getCollectionMetrics(input?: {
   let invoiceCountInLookback = 0;
 
   for (const entry of ledgerPayload.value ?? []) {
+    if (!period.matches(entry.postingDate)) continue;
     const entryCust = entryCustomerNo(entry);
     if (customerNo && entryCust !== customerNo) continue;
 
@@ -3840,6 +3885,7 @@ export async function getCollectionMetrics(input?: {
     customerNo: customerNo ?? null,
     customerName: customerName ?? null,
     scope: customerNo ? "single_customer" : "company_wide",
+    period: period.label,
     lookbackDays,
     basis:
       "Open invoice remaining amounts aged by due date; DSO estimate = (outstanding / invoice sales in lookback window) × lookback days.",

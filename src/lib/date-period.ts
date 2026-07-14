@@ -2,6 +2,8 @@ import { BS_MONTHS, getCurrentFiscalYearStart, getNepaliFiscalYear, toBs } from 
 
 /** Flexible AD / BS date filtering for analytics tools. */
 export type DatePeriodInput = {
+  /** Explicitly opt out of the default current Nepali fiscal-year scope. */
+  allTime?: boolean;
   year?: number;
   month?: number;
   week?: number;
@@ -147,15 +149,25 @@ export function resolveDatePeriod(
 export function periodFromInput(input?: DatePeriodInput): {
   period: DatePeriodFilter;
 } | { error: string } {
+  if (input?.allTime) {
+    return {
+      period: {
+        label: "all synced history",
+        matches: () => true,
+      },
+    };
+  }
+
+  const normalized = withDefaultNepaliFiscalYear(input);
   const hasFilter =
-    input?.year ||
-    input?.month ||
-    input?.week ||
-    input?.day ||
-    input?.dateFrom ||
-    input?.dateTo ||
-    input?.nepaliMonth ||
-    input?.fiscalYearStart;
+    normalized.year ||
+    normalized.month ||
+    normalized.week ||
+    normalized.day ||
+    normalized.dateFrom ||
+    normalized.dateTo ||
+    normalized.nepaliMonth ||
+    normalized.fiscalYearStart;
 
   if (!hasFilter) {
     return {
@@ -166,7 +178,7 @@ export function periodFromInput(input?: DatePeriodInput): {
     };
   }
 
-  const resolved = resolveDatePeriod(input);
+  const resolved = resolveDatePeriod(normalized);
   if ("error" in resolved) return resolved;
   return { period: resolved };
 }
@@ -178,6 +190,7 @@ export function periodFromInput(input?: DatePeriodInput): {
 export function withDefaultNepaliFiscalYear(
   input?: DatePeriodInput,
 ): DatePeriodInput {
+  if (input?.allTime) return input;
   const hasSpecificFilter = Boolean(
     input?.month ||
       input?.week ||

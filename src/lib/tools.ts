@@ -55,10 +55,35 @@ import {
 } from "./analytics-queries";
 import { useSupabaseMirror } from "./config";
 import { type DatePeriodInput } from "./date-period";
+import {
+  detectCalendarPreference,
+  normalizeToolArgs,
+  periodArgsFromRecord,
+} from "./tool-policy";
 
 const mirrorOnly = "Requires Supabase mirror mode (BC_DATA_SOURCE=supabase).";
+const SNAPSHOT_TOOLS = new Set([
+  "get_companies",
+  "get_customers",
+  "search_customers",
+  "get_items",
+  "search_items",
+  "get_item_detail",
+  "get_uoms",
+  "get_salespersons",
+  "get_inventory_summary",
+  "get_low_stock_items",
+  "get_inventory_by_item_type",
+  "get_customer_alerts",
+  "get_sync_status",
+]);
 
 const periodToolProperties = {
+  allTime: {
+    type: SchemaType.BOOLEAN,
+    description:
+      "Set true ONLY when the user explicitly asks for all-time, lifetime, or all synced history. Otherwise current Nepali FY is the default.",
+  },
   year: {
     type: SchemaType.NUMBER,
     description:
@@ -96,40 +121,14 @@ const periodToolProperties = {
 } as const;
 
 function periodArgs(args: Record<string, unknown>): DatePeriodInput {
-  return {
-    year: typeof args.year === "number" ? args.year : undefined,
-    month: typeof args.month === "number" ? args.month : undefined,
-    week: typeof args.week === "number" ? args.week : undefined,
-    day: typeof args.day === "number" ? args.day : undefined,
-    dateFrom: args.dateFrom as string | undefined,
-    dateTo: args.dateTo as string | undefined,
-    nepaliMonth: args.nepaliMonth as string | undefined,
-    fiscalYearStart:
-      typeof args.fiscalYearStart === "number" ? args.fiscalYearStart : undefined,
-  };
+  return periodArgsFromRecord(args);
 }
 
 /** Prefer Nepali FY over a bare AD year (e.g. model wrongly passes year=2026 for "this year"). */
 function nepaliPreferredPeriodArgs(
   args: Record<string, unknown>,
 ): DatePeriodInput {
-  const period = periodArgs(args);
-  const hasAdOnlyYear =
-    typeof period.year === "number" &&
-    period.year >= 2000 &&
-    period.month == null &&
-    period.week == null &&
-    period.day == null &&
-    !period.dateFrom &&
-    !period.dateTo &&
-    !period.nepaliMonth &&
-    period.fiscalYearStart == null;
-
-  // Drop bare AD year so tools default to current Nepali FY (2082/83), not calendar 2026.
-  if (hasAdOnlyYear) {
-    return {};
-  }
-  return period;
+  return periodArgs(args);
 }
 
 export const toolDeclarations: FunctionDeclaration[] = [
@@ -179,6 +178,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.STRING,
           description: "Invoice/document number if known, e.g. W_CDP_SB82/83-00165.",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -250,6 +250,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
+        allTime: periodToolProperties.allTime,
         fiscalYearStart: {
           type: SchemaType.NUMBER,
           description:
@@ -281,6 +282,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description:
             "due_date (payment overdue) or posting_date (days since invoice). Default due_date unless user asks outstanding above X days / since invoice.",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -295,6 +297,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.NUMBER,
           description: "How many customers to return. Default 15.",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -331,6 +334,11 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description:
             "Optional explicit item numbers to include, e.g. ['FGDCDIP20KG','CMCD-20KG'].",
         },
+        returnsOnly: {
+          type: SchemaType.BOOLEAN,
+          description:
+            "Set true only for sales return / credit memo questions. Returns returned quantity and value as positive totals.",
+        },
         ...periodToolProperties,
       },
     },
@@ -362,6 +370,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
+        allTime: periodToolProperties.allTime,
         fiscalYearStart: {
           type: SchemaType.NUMBER,
           description: "Nepali FY start BS year, e.g. 2082 for FY 2082/83.",
@@ -407,12 +416,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
       properties: {
         query: { type: SchemaType.STRING, description: "Customer name search." },
         customerNo: { type: SchemaType.STRING },
-        fiscalYearStart: {
-          type: SchemaType.NUMBER,
-          description: "Nepali FY start BS year, e.g. 2082 for FY 2082/83.",
-        },
-        year: { type: SchemaType.NUMBER },
-        month: { type: SchemaType.NUMBER, description: "AD month 1-12." },
+        ...periodToolProperties,
       },
     },
   },
@@ -534,6 +538,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.NUMBER,
           description: "Max detail lines to return (default 40).",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -672,13 +677,13 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.STRING,
           description: "Depot code e.g. W (Balkot). Filters by customer's primary sales branch.",
         },
-        year: { type: SchemaType.NUMBER },
         status: {
           type: SchemaType.STRING,
           description:
             'e.g. "Cheque Received" (in hand), "Cheque Cleared", "Cheque Deposited". Aliases: cheque in hand, not deposited.',
         },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
       },
     },
   },
@@ -699,6 +704,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           description: "Depot code, e.g. W for Balkot, J for Bhairahawa.",
         },
         limit: { type: SchemaType.NUMBER },
+        ...periodToolProperties,
       },
     },
   },
@@ -808,6 +814,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
           type: SchemaType.NUMBER,
           description: "Sales window for DSO estimate. Default 90.",
         },
+        ...periodToolProperties,
       },
     },
   },
@@ -984,7 +991,9 @@ export async function executeTool(
     success: boolean;
     error?: string;
   }) => Promise<void>,
+  userMessage = "",
 ): Promise<unknown> {
+  args = normalizeToolArgs(name, args, userMessage);
   try {
     let result: unknown;
 
@@ -1013,6 +1022,7 @@ export async function executeTool(
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
           documentNo: args.documentNo as string | undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_customer_ledger_entries":
@@ -1046,6 +1056,10 @@ export async function executeTool(
           : await bcApi.getApiCatalog();
         break;
       case "get_monthly_revenue":
+        if (detectCalendarPreference(userMessage) !== "ad") {
+          result = await getNepaliMonthlySales();
+          break;
+        }
         if (useSupabaseMirror) {
           result = await getMonthlyRevenueFromMirror(
             typeof args.year === "number" ? args.year : undefined,
@@ -1061,7 +1075,13 @@ export async function executeTool(
         if (!useSupabaseMirror) {
           return { error: "Sales summary requires Supabase mirror mode." };
         }
-        result = await getSalesSummary();
+        result = args.allTime
+          ? await getSalesSummary()
+          : await getNepaliMonthlySales(
+              typeof args.fiscalYearStart === "number"
+                ? args.fiscalYearStart
+                : undefined,
+            );
         break;
       case "get_nepali_monthly_sales":
         if (!useSupabaseMirror) {
@@ -1088,6 +1108,7 @@ export async function executeTool(
               : undefined,
           query: args.query as string | undefined,
           customerNo: args.customerNo as string | undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_outstanding_receivables":
@@ -1099,6 +1120,7 @@ export async function executeTool(
         result = await getOutstandingReceivables({
           limit:
             typeof args.limit === "number" ? (args.limit as number) : undefined,
+          ...periodArgs(args),
         });
         break;
       case "search_items":
@@ -1116,6 +1138,7 @@ export async function executeTool(
           itemNumbers: Array.isArray(args.itemNumbers)
             ? (args.itemNumbers as string[])
             : undefined,
+          returnsOnly: args.returnsOnly === true,
           ...periodArgs(args),
         });
         break;
@@ -1136,6 +1159,7 @@ export async function executeTool(
               : undefined,
           year: typeof args.year === "number" ? args.year : undefined,
           month: typeof args.month === "number" ? args.month : undefined,
+          allTime: args.allTime === true,
           limit: typeof args.limit === "number" ? args.limit : undefined,
           rankBy: args.rankBy as
             | "invoice_sales"
@@ -1161,16 +1185,18 @@ export async function executeTool(
         result = await getCustomerSales({
           customerNo: args.customerNo as string | undefined,
           query: args.query as string | undefined,
-          fiscalYearStart:
-            typeof args.fiscalYearStart === "number"
-              ? args.fiscalYearStart
-              : undefined,
-          year: typeof args.year === "number" ? args.year : undefined,
-          month: typeof args.month === "number" ? args.month : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_daily_revenue":
         if (!useSupabaseMirror) return { error: mirrorOnly };
+        if (detectCalendarPreference(userMessage) !== "ad") {
+          result = {
+            error:
+              "Daily AD revenue requires an explicit English/Gregorian/AD date. Use a Nepali month/fiscal-year tool for BS questions.",
+          };
+          break;
+        }
         result = await getDailyRevenue({
           year: typeof args.year === "number" ? args.year : undefined,
           month: typeof args.month === "number" ? args.month : undefined,
@@ -1178,6 +1204,13 @@ export async function executeTool(
         break;
       case "compare_revenue_periods":
         if (!useSupabaseMirror) return { error: mirrorOnly };
+        if (detectCalendarPreference(userMessage) !== "ad") {
+          result = {
+            error:
+              "AD period comparison requires an explicit English/Gregorian/AD request.",
+          };
+          break;
+        }
         result = await compareRevenuePeriods({
           year1: args.year1 as number,
           month1: typeof args.month1 === "number" ? args.month1 : undefined,
@@ -1228,6 +1261,7 @@ export async function executeTool(
           branchCode: args.branchCode as string | undefined,
           productQuery: args.productQuery as string | undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "search_sales_orders":
@@ -1301,9 +1335,9 @@ export async function executeTool(
           query: args.query as string | undefined,
           customerNo: args.customerNo as string | undefined,
           branchCode: args.branchCode as string | undefined,
-          year: typeof args.year === "number" ? args.year : undefined,
           status: args.status as string | undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_cheque_in_hand":
@@ -1313,6 +1347,7 @@ export async function executeTool(
           customerNo: args.customerNo as string | undefined,
           branchCode: args.branchCode as string | undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_item_detail":
@@ -1372,6 +1407,7 @@ export async function executeTool(
             typeof args.lookbackDays === "number"
               ? args.lookbackDays
               : undefined,
+          ...periodArgs(args),
         });
         break;
       case "get_top_paying_customers":
@@ -1468,6 +1504,20 @@ export async function executeTool(
         break;
       default:
         return { error: `Unknown tool: ${name}` };
+    }
+
+    if (
+      SNAPSHOT_TOOLS.has(name) &&
+      result &&
+      typeof result === "object" &&
+      !Array.isArray(result)
+    ) {
+      result = {
+        ...(result as Record<string, unknown>),
+        scope: "current_snapshot",
+        periodApplicability:
+          "Current snapshot; the synced source has no historical transaction date to apply a fiscal-year filter.",
+      };
     }
 
     const truncated = truncateResult(result);

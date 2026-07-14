@@ -81,6 +81,30 @@ export function toBs(date: Date): BsParts | null {
   }
 }
 
+/** Human-readable BS date, e.g. "2083 Asar 30". */
+export function formatBsDate(value?: string | Date): string {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  const bs = toBs(date);
+  return bs ? `${bs.year} ${bs.monthName} ${bs.date}` : "";
+}
+
+/** Convert common AD date strings in model output to BS display dates. */
+export function replaceAdDatesWithBs(text: string): string {
+  const isoConverted = text.replace(
+    /\b(20\d{2})-(\d{2})-(\d{2})(?:T[\d:.+-]+Z?)?\b/g,
+    (match) => formatBsDate(match) || match,
+  );
+
+  return isoConverted.replace(
+    /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),\s+(20\d{2})\b/gi,
+    (match, month: string, day: string, year: string) => {
+      const date = new Date(`${month} ${day}, ${year}`);
+      return formatBsDate(date) || match;
+    },
+  );
+}
+
 export type NepaliFiscalYear = {
   /** BS year in which the fiscal year starts (Shrawan). */
   startYear: number;

@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { planQuery } from "../src/lib/query-intent";
+import {
+  detectCalendarPreference,
+  normalizeToolArgs,
+} from "../src/lib/tool-policy";
+import { replaceAdDatesWithBs } from "../src/lib/nepali-date";
+import { REFERENCE_DATE, REGRESSION_CASES } from "./regression-cases";
+
+for (const regression of REGRESSION_CASES) {
+  test(regression.id, () => {
+    const plan = planQuery(regression.question, REFERENCE_DATE);
+    assert.equal(plan.path, "deterministic");
+    if (plan.path !== "deterministic") return;
+
+    assert.equal(plan.intent, regression.intent);
+    assert.equal(plan.tool, regression.tool);
+    for (const [key, value] of Object.entries(regression.args)) {
+      assert.deepEqual(plan.args[key], value, `unexpected ${key}`);
+    }
+
+    if (regression.id === "pending-sauda-product") {
+      assert.match(String(plan.args.productQuery), /mustard cake 50 kgs/i);
+      assert.equal(plan.args.query, undefined);
+    }
+
+    if (regression.id !== "explicit-ad") {
+      assert.equal(plan.args.year, undefined);
+      assert.equal(plan.args.fiscalYearStart, 2082);
+    }
+  });
+}
+
+test("explicit all-time overrides the default fiscal year", () => {
+  const args = normalizeToolArgs(
+    "get_product_sales",
+    { year: 2026 },
+    "mustard sales all synced history",
+    REFERENCE_DATE,
+  );
+  assert.deepEqual(args, { allTime: true });
+});
+
+test("default output date policy converts AD dates to BS", () => {
+  assert.equal(detectCalendarPreference("sales this year"), "bs");
+  const converted = replaceAdDatesWithBs(
+    "Synced 2026-07-14 and due July 20, 2026.",
+  );
+  assert.doesNotMatch(converted, /2026-07-14|July 20, 2026/);
+  assert.match(converted, /2083\s+Asar/);
+});
+
+test("explicit AD request keeps the AD calendar preference", () => {
+  assert.equal(detectCalendarPreference("sales for June 2026 AD"), "ad");
+});

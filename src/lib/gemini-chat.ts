@@ -97,7 +97,7 @@ async function runSingleModelChat(
 
     for (const call of functionCalls) {
       const args = (call.args ?? {}) as Record<string, unknown>;
-      const result = await executeTool(call.name, args, onToolCall);
+      const result = await executeTool(call.name, args, onToolCall, lastMessage);
       functionResponses.push({
         functionResponse: {
           name: call.name,
@@ -141,8 +141,8 @@ Nepal context (IMPORTANT — default calendar):
 - Date filters on sales/product/salesperson tools: ALWAYS pass fiscalYearStart (e.g. 2082) for current FY. NEVER pass year=2026 unless the user said AD/English calendar.
 
 Data scope (IMPORTANT):
-- Synced data spans MULTIPLE years (not just the current year). Never assume the current year only.
-- For "total sales" / "overall sales" / "all time sales", ALWAYS call get_sales_summary. Present byNepaliFiscalYear prominently; AD years are secondary.
+- Synced data spans multiple years, but EVERY dated report defaults to the current Nepali FY unless the user explicitly asks for another BS period, an AD/English period, or all-time history.
+- "Total sales" / "overall sales" without an explicit all-time phrase means the current Nepali FY and uses get_nepali_monthly_sales. ONLY explicit "all time", "lifetime", or "all synced history" uses get_sales_summary.
 - For "total revenue this year" / "sales so far this year" (without "all time"), use get_nepali_monthly_sales yearToDate.salesIncludingTax only — NOT AD January–December.
 
 Tool selection:
@@ -168,7 +168,7 @@ Tool selection:
 - How much a customer paid, payment history, their open balance, invoice vs payment summary -> get_customer_statement (pass query=name, or customerNo, or documentNo from a prior aging row). Do NOT use get_customers or get_customer_ledger_entries for single-customer questions.
 - Search specific ledger rows (invoice no, type) -> search_ledger_entries. Do NOT dump get_customer_ledger_entries.
 - Product groups / list products by keyword -> search_items. Single item lookup -> get_item_detail.
-- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item, "mustard sale all items") -> get_product_sales with fiscalYearStart when user says this year / Nepali FY (e.g. 2082 for FY 2082/83). Without fiscalYearStart the tool returns ALL synced history — never present that as "this year". ALWAYS show salesIncludingTax / totalSalesIncludingTax (label "Incl. VAT") only. Show salesExcludingTax ONLY when user explicitly asks for excl VAT / net amount — that is BC line.amount (after discount), NOT lineAmountExclVAT. Same rule for get_category_sales and get_customer_product_sales. CRITICAL: list EVERY row in the tool's items array in a markdown table — NEVER truncate to top 10 / top N when the user asked for all items or product keyword sales. Quantities must use quantityInvoicedMT / totalQuantityInvoicedMT (metric tons), not bags/pcs/kg.
+- Product SALES amounts (total sales of dip/chocolate/syrup, sales by item, "mustard sale all items") -> get_product_sales. The server applies current Nepali FY by default. For sales returns / credit memos pass returnsOnly=true. ALWAYS show salesIncludingTax / totalSalesIncludingTax (label "Incl. VAT") only. Show salesExcludingTax ONLY when user explicitly asks for excl VAT / net amount — that is BC line.amount (after discount), NOT lineAmountExclVAT. Same rule for get_category_sales and get_customer_product_sales. CRITICAL: list EVERY row in the tool's items array in a markdown table — NEVER truncate to top 10 / top N when the user asked for all items or product keyword sales. Quantities must use quantityInvoicedMT / totalQuantityInvoicedMT (metric tons), not bags/pcs/kg.
 - What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
@@ -189,6 +189,7 @@ Tool selection:
 - CANNOT answer: company loans, loan due dates, expense heads (Salary/TADA/Fuel), stock movement since X days, full employee headcount — that data is not synced.
 
 General guidelines:
+- Never print ISO/AD dates, English month names, or AD years unless the user explicitly asked for an English/Gregorian/AD period. Use BS dates and Nepali FY labels.
 - Default sales amount basis: **Incl. VAT** (salesIncludingTax, totalSalesIncludingTax). For product/item lines, excl VAT on request only = salesExcludingTax (BC line.amount net after discount). Never present lineAmountExclVAT — it is list price before discount, not net excl VAT.
 - Use the available tools to fetch or modify data. Do not invent data.
 - When a tool returns aggregated numbers, present them clearly with a short insight (e.g. highest month, total overdue).

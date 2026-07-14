@@ -13,6 +13,7 @@ import {
   getChequeInHand,
   getCustomerSales,
   getTopCustomers,
+  getCollectionMetrics,
 } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
 import {
@@ -23,7 +24,17 @@ import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
 import { getMirror } from "./bc-mirror";
-import { getCurrentFiscalYearStart, fiscalYearLabel } from "./nepali-date";
+import {
+  formatBsDate,
+  getCurrentFiscalYearStart,
+  fiscalYearLabel,
+} from "./nepali-date";
+import { planQuery } from "./query-intent";
+import {
+  explicitlyRequestsAllTime,
+  extractMessagePeriod,
+} from "./tool-policy";
+import type { DatePeriodInput } from "./date-period";
 
 type Customer = {
   number?: string;
@@ -63,47 +74,59 @@ export async function getDirectResponse(
   company?: string,
 ): Promise<string | null> {
   const normalized = message.trim().toLowerCase();
+  const plan = planQuery(message);
 
   return runWithCompany(normalizeCompanyKey(company), async () => {
     if (isListAllCustomers(normalized)) {
       return listAllCustomers();
     }
 
-    if (isPendingSaudaQuery(normalized)) {
+    if (plan.path === "deterministic" && plan.intent === "pending_sauda") {
       return formatPendingSauda(message);
     }
 
-    if (isChequeInHandQuery(normalized)) {
+    if (plan.path === "deterministic" && plan.intent === "cheque_in_hand") {
       return formatChequeInHand(message);
     }
 
-    if (isTopCustomerSalesQuery(normalized)) {
+    if (plan.path === "deterministic" && plan.intent === "top_customer_sales") {
       return formatTopCustomerSales(message);
     }
 
-    if (isCompanyFiscalYearSalesQuery(normalized)) {
+    if (
+      plan.path === "deterministic" &&
+      plan.intent === "company_sales" &&
+      plan.tool === "get_nepali_monthly_sales"
+    ) {
       return formatCompanyFiscalYearSales(message);
     }
 
-    const customerSales = await formatCustomerSalesIfMatched(message);
-    if (customerSales) {
-      return customerSales;
+    if (plan.path === "deterministic" && plan.intent === "customer_sales") {
+      const customerSales = await formatCustomerSalesIfMatched(message);
+      if (customerSales) return customerSales;
     }
 
-    if (isProductSalesListQuery(normalized)) {
+    if (
+      plan.path === "deterministic" &&
+      (plan.intent === "product_sales" || plan.intent === "product_returns")
+    ) {
       return formatProductSalesList(message);
     }
 
-    if (isReceivablesQuery(normalized)) {
+    if (plan.path === "deterministic" && plan.intent === "receivables") {
       return formatReceivablesResponse(message, normalized);
     }
 
-    const branchCode = extractBranchFromMessage(message);
-    if (branchCode) {
+    if (plan.path === "deterministic" && plan.intent === "collection_metrics") {
+      return formatCollectionMetrics(message, plan.args.query as string | undefined);
+    }
+
+    if (plan.path === "deterministic" && plan.intent === "branch_sales") {
+      const branchCode = String(plan.args.branchCode ?? "");
       return formatBranchSales(branchCode, message);
     }
 
-    if (isBranchWiseSalesQuery(normalized)) {
+    if (plan.path === "deterministic" && plan.intent === "branch_wise_sales") {
       return formatBranchWiseSales();
     }
 
@@ -174,6 +197,7 @@ async function formatChequeInHand(message: string): Promise<string> {
     branchCode,
     query: customerQuery,
     limit: 50,
+    ...periodArgsFromProductSalesMessage(message),
   })) as {
     error?: string;
     candidates?: Array<{ customerNo?: string; name?: string }>;
@@ -183,6 +207,7 @@ async function formatChequeInHand(message: string): Promise<string> {
       branchCode?: string | null;
       branchName?: string | null;
       status?: string | null;
+      period?: string;
     };
     matchCount?: number;
     totalAmount?: number;
@@ -241,6 +266,7 @@ async function formatChequeInHand(message: string): Promise<string> {
   const lines = [
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
+    `Period: **${data.filter?.period ?? `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`}**`,
     `Status: **Cheque Received** (not deposited / not cleared)`,
     `**Total cheque in hand: ${formatAmount(data.totalAmount ?? 0)}** · **${data.matchCount ?? 0} cheque(s)**`,
     "",
@@ -275,7 +301,7 @@ async function formatChequeInHand(message: string): Promise<string> {
       "|---|---|---|---|---|---|---:|",
       ...data.records.slice(0, 40).map(
         (row) =>
-          `| ${row.mrNo ?? ""} | ${escapeCell(row.customerName ?? "")} | ${row.receivedDate ?? ""} | ${row.dueDate ?? ""} | ${escapeCell(row.chequeNo ?? "")} | ${escapeCell(row.drawnBank ?? "")} | ${formatAmount(row.amount)} |`,
+          `| ${row.mrNo ?? ""} | ${escapeCell(row.customerName ?? "")} | ${formatBsDate(row.receivedDate)} | ${formatBsDate(row.dueDate)} | ${escapeCell(row.chequeNo ?? "")} | ${escapeCell(row.drawnBank ?? "")} | ${formatAmount(row.amount)} |`,
       ),
     );
   }
@@ -349,8 +375,10 @@ async function formatPendingSauda(message: string): Promise<string> {
     ...useBranch,
     productQuery: productQuery || undefined,
     limit: 40,
+    ...periodArgsFromProductSalesMessage(message),
   })) as {
     error?: string;
+    period?: string;
     candidates?: Array<{ customerNo?: string; name?: string }>;
     filter?: {
       customerNo?: string | null;
@@ -450,6 +478,7 @@ async function formatPendingSauda(message: string): Promise<string> {
   const lines = [
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
+    `Period: **${data.period ?? `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`}**`,
   ];
 
   if (wantsAveragePrice || productQuery) {
@@ -532,7 +561,7 @@ async function formatPendingSauda(message: string): Promise<string> {
       "|---|---|---|---|---:|---:|---:|---:|---:|",
       ...data.lines.slice(0, 25).map(
         (row) =>
-          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.quantityMT)} | ${formatMetricTons(row.quantityShippedMT)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.unitPrice ?? 0)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.orderNo)} | ${formatBsDate(row.postingDate)} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.quantityMT)} | ${formatMetricTons(row.quantityShippedMT)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.unitPrice ?? 0)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }
@@ -568,6 +597,7 @@ async function formatTopCustomerSales(message: string): Promise<string> {
   })) as {
     error?: string;
     period?: {
+      label?: string;
       fiscalYear?: string | null;
       year?: number | string;
       month?: number | null;
@@ -585,11 +615,15 @@ async function formatTopCustomerSales(message: string): Promise<string> {
   if (data.error) return data.error;
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
-  const period = data.period?.fiscalYear
+  const period = data.period?.label
+    ? data.period.label
+    : data.period?.fiscalYear
     ? `Nepali FY ${data.period.fiscalYear}`
     : data.period?.monthName && data.period?.year
       ? `${data.period.monthName} ${data.period.year}`
-      : "all synced dates";
+      : explicitlyRequestsAllTime(message)
+        ? "all synced history"
+        : `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`;
   const customers = data.customers ?? [];
 
   if (customers.length === 0) {
@@ -702,7 +736,7 @@ async function formatCompanyFiscalYearSales(message: string): Promise<string> {
 
   if (data.asOf?.bs || data.asOf?.ad) {
     lines.push(
-      `As of: ${data.asOf.bs ?? data.asOf.ad ?? ""}${data.asOf.bs && data.asOf.ad ? ` (${data.asOf.ad})` : ""}`,
+      `As of: ${data.asOf.bs ?? formatBsDate(data.asOf.ad)}`,
       "",
     );
   }
@@ -787,6 +821,7 @@ async function formatCustomerSalesIfMatched(
     name?: string;
     customerNo?: string;
     period?: {
+      label?: string;
       fiscalYear?: string | null;
       year?: number | string;
       month?: number | null;
@@ -805,9 +840,13 @@ async function formatCustomerSalesIfMatched(
   if (data.error) return data.error;
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
-  const period = data.period?.fiscalYear
-    ? `Nepali FY ${data.period.fiscalYear}`
-    : "all synced dates";
+  const period =
+    data.period?.label ??
+    (data.period?.fiscalYear
+      ? `Nepali FY ${data.period.fiscalYear}`
+      : explicitlyRequestsAllTime(message)
+        ? "all synced history"
+        : `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`);
   const lines = [
     `**${data.name ?? customer.name} — total sales** — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
@@ -863,7 +902,7 @@ function isProductSalesListQuery(message: string): boolean {
 }
 
 function extractProductQueryFromSalesMessage(message: string): string | null {
-  let text = message
+  const text = message
     .replace(
       /\b(tell|show|give|get|list|check|what(?:'s| is)?|the|total|please|pls)\b/gi,
       " ",
@@ -872,6 +911,7 @@ function extractProductQueryFromSalesMessage(message: string): string | null {
     .replace(/\bevery\s+item\b/gi, " ")
     .replace(/\bitem[- ]?wise\b/gi, " ")
     .replace(/\bby\s+item\b/gi, " ")
+    .replace(/\b(sales?\s+returns?|returns?|credit\s+memos?)\b/gi, " ")
     .replace(
       /\b(sale|sales|sold|invoiced|amount|value|revenue|products?|items?)\b/gi,
       " ",
@@ -897,23 +937,10 @@ function extractProductQueryFromSalesMessage(message: string): string | null {
   return text;
 }
 
-function periodArgsFromProductSalesMessage(message: string): {
-  fiscalYearStart?: number;
-} {
-  const lower = message.toLowerCase();
-  const fyMatch = lower.match(/\bfy\s*(20\d{2}|208\d)\b/);
-  if (fyMatch) return { fiscalYearStart: Number(fyMatch[1]) };
-  const bsMatch = lower.match(/\b(208\d)\s*\/\s*\d{2,4}\b/);
-  if (bsMatch) return { fiscalYearStart: Number(bsMatch[1]) };
-  if (
-    /\b(this\s+year|this\s+fiscal\s+year|ytd|year\s+to\s+date|current\s+(fy|fiscal\s+year)|current\s+year)\b/.test(
-      lower,
-    )
-  ) {
-    const fy = getCurrentFiscalYearStart();
-    return fy != null ? { fiscalYearStart: fy } : {};
-  }
-  return {};
+function periodArgsFromProductSalesMessage(
+  message: string,
+): DatePeriodInput {
+  return extractMessagePeriod(message);
 }
 
 async function formatProductSalesList(message: string): Promise<string> {
@@ -923,8 +950,11 @@ async function formatProductSalesList(message: string): Promise<string> {
   }
 
   const periodArgs = periodArgsFromProductSalesMessage(message);
+  const returnsOnly =
+    /\b(sales?\s+returns?|returns?|credit\s+memos?)\b/i.test(message);
   const data = (await getProductSales({
     query: productQuery,
+    returnsOnly,
     ...periodArgs,
   })) as {
     error?: string;
@@ -952,7 +982,7 @@ async function formatProductSalesList(message: string): Promise<string> {
 
   const companyLabel = getCompany(getActiveCompany()).displayName;
   const items = data.items ?? [];
-  const title = `**${productQuery} sales — all ${items.length} item(s)**`;
+  const title = `**${productQuery} ${returnsOnly ? "sales returns" : "sales"} — all ${items.length} item(s)**`;
 
   if (items.length === 0) {
     return [
@@ -960,7 +990,7 @@ async function formatProductSalesList(message: string): Promise<string> {
       "",
       `Period: ${data.period ?? "all synced dates"}`,
       "",
-      `No invoiced lines matched **${productQuery}**.`,
+      `No ${returnsOnly ? "credit-memo" : "invoiced"} lines matched **${productQuery}**.`,
     ].join("\n");
   }
 
@@ -968,9 +998,9 @@ async function formatProductSalesList(message: string): Promise<string> {
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `Period: **${data.period ?? "all synced dates"}**`,
-    `**Total sales (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty: ${formatMetricTons(data.totalQuantityInvoicedMT)} MT** · **Avg: ${formatAmount(data.averagePricePerMTInclTax ?? 0)} / MT**`,
+    `**Total ${returnsOnly ? "returns" : "sales"} (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty: ${formatMetricTons(data.totalQuantityInvoicedMT)} MT** · **Avg: ${formatAmount(data.averagePricePerMTInclTax ?? 0)} / MT**`,
     "",
-    "| # | Item | Qty (MT) | Sales (Incl. VAT) | Avg NPR/MT |",
+    `| # | Item | Qty (MT) | ${returnsOnly ? "Returns" : "Sales"} (Incl. VAT) | Avg NPR/MT |`,
     "|---:|---|---:|---:|---:|",
     ...items.map(
       (row, index) =>
@@ -985,6 +1015,40 @@ async function formatProductSalesList(message: string): Promise<string> {
   }
 
   return lines.join("\n");
+}
+
+async function formatCollectionMetrics(
+  message: string,
+  query?: string,
+): Promise<string> {
+  const data = (await getCollectionMetrics({
+    query,
+    ...periodArgsFromProductSalesMessage(message),
+  })) as {
+    error?: string;
+    customerName?: string | null;
+    period?: string;
+    totalOutstanding?: number;
+    openInvoiceCount?: number;
+    averageDaysPastDueOnOpenInvoices?: number;
+    averageOpenInvoiceAgeDays?: number;
+    estimatedCollectionDaysDso?: number | null;
+    salesInLookbackPeriod?: number;
+    _syncedAt?: string;
+  };
+  if (data.error) return data.error;
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const subject = data.customerName || "Company";
+  return [
+    `**Average collection days — ${escapeCell(subject)}** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    `Period: **${data.period ?? `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`}**`,
+    `Estimated DSO: **${formatNumber(data.estimatedCollectionDaysDso ?? 0)} days**`,
+    `Average open-invoice age: **${formatNumber(data.averageOpenInvoiceAgeDays ?? 0)} days**`,
+    `Average days past due: **${formatNumber(data.averageDaysPastDueOnOpenInvoices ?? 0)} days**`,
+    `Open invoices: **${data.openInvoiceCount ?? 0}** · Outstanding: **NPR ${formatAmount(data.totalOutstanding ?? 0)}**`,
+  ].join("\n");
 }
 
 function isReceivablesQuery(message: string): boolean {
@@ -1027,7 +1091,7 @@ function extractCustomerQueryFromReceivablesMessage(
 ): string | null {
   if (isCustomerRankingReceivablesQuery(message)) return null;
 
-  let text = message
+  const text = message
     .replace(
       /\b(pending amount|outstanding amount|open balance|total outstanding)\b/gi,
       " ",
@@ -1502,25 +1566,23 @@ async function listAllCustomers(): Promise<string> {
       customer.phoneNumber ?? "",
       formatAmount(customer.balance),
       formatAmount(customer.overdueAmount),
-      formatAmount(customer.totalSalesExcludingTax),
     ].map(escapeCell),
   );
 
   return [
-    `Found **${customers.length} customers** in the latest Supabase sync${formatSync(data._syncedAt)}.`,
+    `Found **${customers.length} customers** in the current customer-master snapshot${formatSync(data._syncedAt)}.`,
+    "_Customer masters are an undated snapshot; fiscal-year sales must be requested through customer sales analytics._",
     "",
-    "| Customer No. | Name | Phone | Balance (NPR) | Overdue (NPR) | Total Sales Excl. Tax (NPR) |",
-    "|---|---|---|---:|---:|---:|",
+    "| Customer No. | Name | Phone | Balance (NPR) | Overdue (NPR) |",
+    "|---|---|---|---:|---:|",
     ...rows.map((row) => `| ${row.join(" | ")} |`),
   ].join("\n");
 }
 
 function formatSync(syncedAt?: string): string {
   if (!syncedAt) return "";
-  return ` (${new Date(syncedAt).toLocaleString("en-US", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  })})`;
+  const bsDate = formatBsDate(syncedAt);
+  return bsDate ? ` (synced ${bsDate})` : "";
 }
 
 function escapeCell(value: string): string {

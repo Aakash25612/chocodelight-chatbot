@@ -13,6 +13,8 @@ import { getDirectResponse } from "@/lib/direct-responses";
 import { normalizeCompanyKey } from "@/lib/companies";
 import { runWithCompany } from "@/lib/company-context";
 import { runWithMirrorCache } from "@/lib/mirror-cache";
+import { replaceAdDatesWithBs } from "@/lib/nepali-date";
+import { detectCalendarPreference } from "@/lib/tool-policy";
 
 export const maxDuration = 60;
 
@@ -95,15 +97,20 @@ async function handleChat(
 
     const history = getGeminiHistory(messages);
     const lastMessage = messages[messages.length - 1].content;
+    const applyDatePolicy = (text: string) =>
+      detectCalendarPreference(lastMessage) === "ad"
+        ? text
+        : replaceAdDatesWithBs(text);
     const directResponse = await getDirectResponse(lastMessage, company);
 
     if (directResponse) {
+      const safeResponse = applyDatePolicy(directResponse);
       if (conversationId && isSupabaseConfigured()) {
-        await saveMessage(conversationId, "assistant", directResponse, 0);
+        await saveMessage(conversationId, "assistant", safeResponse, 0);
       }
 
       return NextResponse.json({
-        message: directResponse,
+        message: safeResponse,
         toolCallsUsed: 0,
         conversationId,
         source: "supabase_direct",
@@ -126,13 +133,14 @@ async function handleChat(
         }
       },
     });
+    const safeText = applyDatePolicy(text);
 
     if (conversationId && isSupabaseConfigured()) {
-      await saveMessage(conversationId, "assistant", text, toolCallsUsed);
+      await saveMessage(conversationId, "assistant", safeText, toolCallsUsed);
     }
 
   return NextResponse.json({
-    message: text,
+    message: safeText,
     toolCallsUsed,
     conversationId,
   });
