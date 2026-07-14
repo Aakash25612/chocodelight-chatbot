@@ -74,3 +74,15 @@ test("outstanding customer rankings are not customer-name lookups", () => {
     assert.equal(topFive.args.query, undefined);
   }
 });
+
+test("average selling price wording is removed from product filters", () => {
+  const plan = planQuery(
+    "mustard cake sales average selling price",
+    REFERENCE_DATE,
+  );
+  assert.equal(plan.path, "deterministic");
+  if (plan.path === "deterministic") {
+    assert.equal(plan.tool, "get_product_sales");
+    assert.equal(plan.args.query, "mustard cake");
+  }
+});

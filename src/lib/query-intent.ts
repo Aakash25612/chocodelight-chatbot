@@ -68,6 +68,8 @@ export function extractProductSalesQuery(message: string): string | null {
       /\b(tell|show|give|get|list|check|what(?:'s| is)?|the|total|please|pls)\b/gi,
       " ",
     )
+    .replace(/\b(?:average|avg)\s+(?:selling\s+|unit\s+)?price\b/gi, " ")
+    .replace(/\b(?:selling\s+|unit\s+)?price\b/gi, " ")
     .replace(/\b(sales?\s+returns?|returns?|credit\s+memos?)\b/gi, " ")
     .replace(/\b(all\s+items?|every\s+item|item[- ]?wise|by\s+item)\b/gi, " ")
     .replace(

@@ -4,6 +4,7 @@ import { matchesProductTerms } from "./product-query";
 import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
+import { averageCustomerSellingPrice } from "./selling-price";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1126,6 +1127,7 @@ export async function searchItems(query?: string): Promise<unknown> {
 type SalesOrder = {
   number?: string;
   postingDate?: string;
+  customerNumber?: string;
 };
 
 type SalesOrderLine = {
@@ -1374,9 +1376,11 @@ export async function getProductSales(
   }
 
   const orderDates = new Map<string, string>();
+  const orderCustomers = new Map<string, string>();
   for (const order of ordersPayload.value ?? []) {
     if (order.number && order.postingDate) {
       orderDates.set(order.number, order.postingDate);
+      orderCustomers.set(order.number, String(order.customerNumber ?? ""));
     }
   }
 
@@ -1419,6 +1423,15 @@ export async function getProductSales(
       salesIncludingTax: number;
       lineCount: number;
       mtConvertible: boolean;
+      customerPrices: Map<
+        string,
+        {
+          quantity: number;
+          quantityMT: number;
+          salesIncl: number;
+          salesExcl: number;
+        }
+      >;
     }
   >();
 
@@ -1427,6 +1440,15 @@ export async function getProductSales(
   let totalQuantity = 0;
   let totalQuantityMT = 0;
   let matchedLines = 0;
+  const customerPrices = new Map<
+    string,
+    {
+      quantity: number;
+      quantityMT: number;
+      salesIncl: number;
+      salesExcl: number;
+    }
+  >();
   let earliest: string | null = null;
   let latest: string | null = null;
 
@@ -1436,6 +1458,7 @@ export async function getProductSales(
     salesExcl: number;
     salesIncl: number;
     postingDate: string;
+    customerNo?: string;
     unitOfMeasureCode?: string;
     category?: string;
   }): void {
@@ -1476,6 +1499,7 @@ export async function getProductSales(
         salesIncludingTax: 0,
         lineCount: 0,
         mtConvertible: mt.convertible,
+        customerPrices: new Map(),
       };
     agg.quantityInvoiced += inputLine.quantity;
     if (mt.metricTons != null) agg.quantityInvoicedMT += mt.metricTons;
@@ -1483,6 +1507,30 @@ export async function getProductSales(
     agg.salesExcludingTax += inputLine.salesExcl;
     agg.salesIncludingTax += inputLine.salesIncl;
     agg.lineCount += 1;
+    const customerKey = inputLine.customerNo?.trim() || "(unknown customer)";
+    const customerAgg = agg.customerPrices.get(customerKey) ?? {
+      quantity: 0,
+      quantityMT: 0,
+      salesIncl: 0,
+      salesExcl: 0,
+    };
+    customerAgg.quantity += inputLine.quantity;
+    if (mt.metricTons != null) customerAgg.quantityMT += mt.metricTons;
+    customerAgg.salesIncl += inputLine.salesIncl;
+    customerAgg.salesExcl += inputLine.salesExcl;
+    agg.customerPrices.set(customerKey, customerAgg);
+
+    const overallCustomer = customerPrices.get(customerKey) ?? {
+      quantity: 0,
+      quantityMT: 0,
+      salesIncl: 0,
+      salesExcl: 0,
+    };
+    overallCustomer.quantity += inputLine.quantity;
+    if (mt.metricTons != null) overallCustomer.quantityMT += mt.metricTons;
+    overallCustomer.salesIncl += inputLine.salesIncl;
+    overallCustomer.salesExcl += inputLine.salesExcl;
+    customerPrices.set(customerKey, overallCustomer);
     byItem.set(inputLine.itemNo, agg);
   }
 
@@ -1501,6 +1549,7 @@ export async function getProductSales(
         salesExcl,
         salesIncl,
         postingDate: String(line.postingDate ?? ""),
+        customerNo: String(line.sellToCustomerNo ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         category: String(line.itemCategoryCode ?? ""),
       });
@@ -1521,6 +1570,7 @@ export async function getProductSales(
         salesExcl,
         salesIncl,
         postingDate: String(line.postingDate ?? ""),
+        customerNo: String(line.sellToCustomerNo ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
       });
     }
@@ -1539,12 +1589,38 @@ export async function getProductSales(
         salesExcl,
         salesIncl: salesExcl,
         postingDate: orderDates.get(String(line.docNo ?? "")) ?? "",
+        customerNo: orderCustomers.get(String(line.docNo ?? "")) ?? "",
       });
     }
   }
 
   const items = [...byItem.values()]
-    .map((row) => ({
+    .map((row) => {
+      const customerUnitIncl = averageCustomerSellingPrice(
+        [...row.customerPrices.values()].map((price) => ({
+          amount: price.salesIncl,
+          quantity: price.quantity,
+        })),
+      );
+      const customerUnitExcl = averageCustomerSellingPrice(
+        [...row.customerPrices.values()].map((price) => ({
+          amount: price.salesExcl,
+          quantity: price.quantity,
+        })),
+      );
+      const customerMtIncl = averageCustomerSellingPrice(
+        [...row.customerPrices.values()].map((price) => ({
+          amount: price.salesIncl,
+          quantity: price.quantityMT,
+        })),
+      );
+      const customerMtExcl = averageCustomerSellingPrice(
+        [...row.customerPrices.values()].map((price) => ({
+          amount: price.salesExcl,
+          quantity: price.quantityMT,
+        })),
+      );
+      return {
       itemNo: row.itemNo,
       name: row.name,
       category: row.category,
@@ -1556,24 +1632,47 @@ export async function getProductSales(
       salesIncludingTax: round(row.salesIncludingTax),
       salesExcludingTax: round(row.salesExcludingTax),
       averageUnitPriceInclTax:
-        row.quantityInvoiced > 0
-          ? round(row.salesIncludingTax / row.quantityInvoiced)
-          : 0,
+        customerUnitIncl.average == null ? 0 : round(customerUnitIncl.average),
       averageUnitPrice:
-        row.quantityInvoiced > 0
-          ? round(row.salesExcludingTax / row.quantityInvoiced)
-          : 0,
+        customerUnitExcl.average == null ? 0 : round(customerUnitExcl.average),
       averagePricePerMTInclTax:
+        customerMtIncl.average == null ? null : round(customerMtIncl.average),
+      averagePricePerMT:
+        customerMtExcl.average == null ? null : round(customerMtExcl.average),
+      averageSellingPriceCustomerCount: customerMtIncl.customerCount,
+      weightedAveragePricePerMTInclTax:
         row.mtConvertible && row.quantityInvoicedMT > 0
           ? round(row.salesIncludingTax / row.quantityInvoicedMT)
           : null,
-      averagePricePerMT:
-        row.mtConvertible && row.quantityInvoicedMT > 0
-          ? round(row.salesExcludingTax / row.quantityInvoicedMT)
-          : null,
       lineCount: row.lineCount,
-    }))
+      };
+    })
     .sort((a, b) => b.salesIncludingTax - a.salesIncludingTax);
+
+  const overallUnitIncl = averageCustomerSellingPrice(
+    [...customerPrices.values()].map((price) => ({
+      amount: price.salesIncl,
+      quantity: price.quantity,
+    })),
+  );
+  const overallUnitExcl = averageCustomerSellingPrice(
+    [...customerPrices.values()].map((price) => ({
+      amount: price.salesExcl,
+      quantity: price.quantity,
+    })),
+  );
+  const overallMtIncl = averageCustomerSellingPrice(
+    [...customerPrices.values()].map((price) => ({
+      amount: price.salesIncl,
+      quantity: price.quantityMT,
+    })),
+  );
+  const overallMtExcl = averageCustomerSellingPrice(
+    [...customerPrices.values()].map((price) => ({
+      amount: price.salesExcl,
+      quantity: price.quantityMT,
+    })),
+  );
 
   return {
     currency: "NPR",
@@ -1588,7 +1687,7 @@ export async function getProductSales(
     itemNumbers: explicitItems.length ? explicitItems : null,
     quantityUnit: "MT",
     displayNote:
-      'List EVERY item in items (full table) — never top 10 only. Primary quantity is quantityInvoicedMT / totalQuantityInvoicedMT (metric tons). Show totalSalesIncludingTax and salesIncludingTax only (label "Incl. VAT"). averagePricePerMTInclTax = sales ÷ MT. Show salesExcludingTax ONLY when the user explicitly asks for excl VAT.',
+      'List EVERY item in items (full table) — never top 10 only. Primary quantity is metric tons. averagePricePerMTInclTax is the equal-customer mean: calculate each customer’s sales÷MT rate, then average those customer rates so large buyers do not dominate.',
     itemCount: items.length,
     basis: usePostedInvoices
       ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount. Never use lineAmountExclVAT (pre-discount list price)."
@@ -1605,15 +1704,18 @@ export async function getProductSales(
     totalQuantityInvoiced: round(totalQuantity),
     totalQuantityInvoicedMT: round(totalQuantityMT),
     averageUnitPriceInclTax:
-      totalQuantity > 0 ? round(totalSalesIncludingTax / totalQuantity) : 0,
+      overallUnitIncl.average == null ? 0 : round(overallUnitIncl.average),
     averageUnitPrice:
-      totalQuantity > 0 ? round(totalSales / totalQuantity) : 0,
+      overallUnitExcl.average == null ? 0 : round(overallUnitExcl.average),
     averagePricePerMTInclTax:
+      overallMtIncl.average == null ? null : round(overallMtIncl.average),
+    averagePricePerMT:
+      overallMtExcl.average == null ? null : round(overallMtExcl.average),
+    averageSellingPriceCustomerCount: overallMtIncl.customerCount,
+    weightedAveragePricePerMTInclTax:
       totalQuantityMT > 0
         ? round(totalSalesIncludingTax / totalQuantityMT)
         : null,
-    averagePricePerMT:
-      totalQuantityMT > 0 ? round(totalSales / totalQuantityMT) : null,
     matchedLineCount: matchedLines,
     items,
     _syncedAt:

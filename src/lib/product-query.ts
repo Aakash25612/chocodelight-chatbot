@@ -34,8 +34,8 @@ export function looksLikeProductQuery(text: string): boolean {
 /** Strip filler words from a product-sales / sauda product fragment. */
 export function cleanProductQueryFragment(text: string): string {
   return text
-    .replace(/\b(average|avg)\s+(unit\s+)?price\b/gi, " ")
-    .replace(/\b(unit\s+)?price\b/gi, " ")
+    .replace(/\b(average|avg)\s+((selling|unit)\s+)?price\b/gi, " ")
+    .replace(/\b((selling|unit)\s+)?price\b/gi, " ")
     .replace(
       /\b(tell|show|give|get|list|check|what(?:'s| is)?|his|her|their|the|please|pls)\b/gi,
       " ",

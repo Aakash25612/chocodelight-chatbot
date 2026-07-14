@@ -319,7 +319,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item in items (sorted by salesIncludingTax) — NEVER summarize as top 10. Primary quantity is quantityInvoicedMT / totalQuantityInvoicedMT (metric tons via UOM→KG÷1000); averagePricePerMTInclTax = sales÷MT. Pass fiscalYearStart (e.g. 2082) when user says 'this year', YTD, or a Nepali fiscal year — without it you get ALL-TIME totals (not FY). Show salesExcludingTax only when user asks for excl VAT.",
+      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item. averagePricePerMTInclTax is an EQUAL-CUSTOMER average: calculate each customer's effective sales÷MT rate, then average those rates; never calculate the displayed average as total sales÷total MT. Primary quantity is MT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -517,7 +517,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_pending_sauda",
     description:
-      "MANDATORY for any 'sauda' / 'pending sauda' question (e.g. 'Sri Kamdhenu Suppliers tell his pending sauda', 'MUSTARD CAKE average price in pending sauda'). Locked sales orders where quantity − quantityShipped > 0. Primary quantity fields are metric tons (pendingQuantityMT / totalPendingQuantityMT). averagePricePerMT / averageUnitPrice for average price questions. Pass productQuery for item names (mustard cake, oil) — NEVER pass item names as customer query. NEVER show bags/pcs/kg as the main qty — use MT. Amount = pendingQuantity × unitPrice. NEVER confuse with outstanding receivables.",
+      "MANDATORY for any sauda/pending-sauda question. Locked sales orders where quantity − quantityShipped > 0. averagePricePerMT is an EQUAL-CUSTOMER average of each customer's effective pending amount÷pending MT rate, not total amount÷total MT. Pass productQuery for item names; never treat items as customers.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

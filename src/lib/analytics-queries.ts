@@ -32,6 +32,7 @@ import {
   looksLikeProductQuery,
   matchesProductTerms,
 } from "./product-query";
+import { averageCustomerSellingPrice } from "./selling-price";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1683,6 +1684,10 @@ export async function getPendingSauda(
       lineCount: number;
       orderCount: Set<string>;
       mtConvertible: boolean;
+      customerPrices: Map<
+        string,
+        { quantity: number; quantityMT: number; amount: number }
+      >;
     }
   >();
   const byCustomer = new Map<
@@ -1775,6 +1780,7 @@ export async function getPendingSauda(
         lineCount: 0,
         orderCount: new Set<string>(),
         mtConvertible: pendingMt.convertible,
+        customerPrices: new Map(),
       };
     itemAgg.pendingQuantity += pendingQuantity;
     if (pendingMt.metricTons != null) {
@@ -1785,6 +1791,18 @@ export async function getPendingSauda(
     itemAgg.pendingAmount += pendingAmount;
     itemAgg.lineCount += 1;
     itemAgg.orderCount.add(orderNo);
+    const priceCustomerKey = custNo || orderNo;
+    const itemCustomerPrice = itemAgg.customerPrices.get(priceCustomerKey) ?? {
+      quantity: 0,
+      quantityMT: 0,
+      amount: 0,
+    };
+    itemCustomerPrice.quantity += pendingQuantity;
+    if (pendingMt.metricTons != null) {
+      itemCustomerPrice.quantityMT += pendingMt.metricTons;
+    }
+    itemCustomerPrice.amount += pendingAmount;
+    itemAgg.customerPrices.set(priceCustomerKey, itemCustomerPrice);
     byItem.set(itemNo, itemAgg);
 
     const custAgg =
@@ -1819,14 +1837,24 @@ export async function getPendingSauda(
   const totalPendingAmount = round(
     pendingLines.reduce((sum, row) => sum + row.pendingAmount, 0),
   );
+  const customerAverageUnit = averageCustomerSellingPrice(
+    [...byCustomer.values()].map((row) => ({
+      amount: row.pendingAmount,
+      quantity: row.pendingQuantity,
+    })),
+  );
+  const customerAverageMt = averageCustomerSellingPrice(
+    [...byCustomer.values()].map((row) => ({
+      amount: row.pendingAmount,
+      quantity: row.pendingQuantityMT,
+    })),
+  );
   const averageUnitPrice =
-    totalPendingQuantity > 0
-      ? round(totalPendingAmount / totalPendingQuantity)
-      : null;
+    customerAverageUnit.average == null
+      ? null
+      : round(customerAverageUnit.average);
   const averagePricePerMT =
-    totalPendingQuantityMT > 0
-      ? round(totalPendingAmount / totalPendingQuantityMT)
-      : null;
+    customerAverageMt.average == null ? null : round(customerAverageMt.average);
 
   return {
     currency: "NPR",
@@ -1834,7 +1862,7 @@ export async function getPendingSauda(
     period: period.label,
     dataQuality: { skippedMissingPostingDate },
     displayNote:
-      "Pending Sauda = Locked sales orders with unshipped qty. Primary quantity is metric tons (MT) via item UOM→KG÷1000. Amount = pendingQuantity × unitPrice (order-line UOM). averageUnitPrice = amount÷pending qty (order UOM); averagePricePerMT = amount÷pending MT. Pass productQuery for item filters (e.g. mustard cake) — never treat item names as customers. Non-weight items (PCS/SET/MTR) are skipped from MT totals.",
+      "Pending Sauda = Locked sales orders with unshipped qty. averagePricePerMT is the equal-customer mean: each customer’s pending amount÷pending MT rate is calculated first, then those customer rates are averaged. Large buyers do not receive extra weight.",
     basis:
       "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped. MT from uoms.qtyPerUnitofMeasure against item base KG.",
     filter: {
@@ -1852,10 +1880,28 @@ export async function getPendingSauda(
       totalPendingAmount,
       averageUnitPrice,
       averagePricePerMT,
+      averageSellingPriceCustomerCount: customerAverageMt.customerCount,
+      weightedAveragePricePerMT:
+        totalPendingQuantityMT > 0
+          ? round(totalPendingAmount / totalPendingQuantityMT)
+          : null,
       skippedNonWeightLines,
     },
     topItems: [...byItem.values()]
-      .map((row) => ({
+      .map((row) => {
+        const itemCustomerUnit = averageCustomerSellingPrice(
+          [...row.customerPrices.values()].map((price) => ({
+            amount: price.amount,
+            quantity: price.quantity,
+          })),
+        );
+        const itemCustomerMt = averageCustomerSellingPrice(
+          [...row.customerPrices.values()].map((price) => ({
+            amount: price.amount,
+            quantity: price.quantityMT,
+          })),
+        );
+        return {
         itemNo: row.itemNo,
         itemName: row.itemName,
         salesUnit: row.salesUnit,
@@ -1865,16 +1911,20 @@ export async function getPendingSauda(
         pendingQuantity: round(row.pendingQuantity),
         pendingAmount: round(row.pendingAmount),
         averageUnitPrice:
-          row.pendingQuantity > 0
-            ? round(row.pendingAmount / row.pendingQuantity)
-            : null,
+          itemCustomerUnit.average == null
+            ? null
+            : round(itemCustomerUnit.average),
         averagePricePerMT:
+          itemCustomerMt.average == null ? null : round(itemCustomerMt.average),
+        averageSellingPriceCustomerCount: itemCustomerMt.customerCount,
+        weightedAveragePricePerMT:
           row.mtConvertible && row.pendingQuantityMT > 0
             ? round(row.pendingAmount / row.pendingQuantityMT)
             : null,
         lineCount: row.lineCount,
         orderCount: row.orderCount.size,
-      }))
+        };
+      })
       .sort((a, b) => b.pendingAmount - a.pendingAmount)
       .slice(0, 20),
     topCustomers: [...byCustomer.values()]
@@ -2221,6 +2271,9 @@ export async function getCustomerProductSales(
   const items = [...byItem.values()]
     .map((row) => {
       const mt = quantityToMetricTons(uomIndex, row.itemNo, row.quantity);
+      const customerAverageMt = averageCustomerSellingPrice([
+        { amount: row.salesIncl, quantity: mt.metricTons ?? 0 },
+      ]);
       return {
         itemNo: row.itemNo,
         name: row.name,
@@ -2229,6 +2282,11 @@ export async function getCustomerProductSales(
         quantityInvoiced: round(row.quantity),
         quantityInvoicedMT: mt.metricTons != null ? round(mt.metricTons) : null,
         averagePricePerMTInclTax:
+          customerAverageMt.average == null
+            ? null
+            : round(customerAverageMt.average),
+        averageSellingPriceCustomerCount: customerAverageMt.customerCount,
+        weightedAveragePricePerMTInclTax:
           mt.metricTons && mt.metricTons !== 0
             ? round(row.salesIncl / mt.metricTons)
             : null,
@@ -2493,6 +2551,10 @@ export async function getBranchProductSales(
       salesIncl: number;
       salesExcl: number;
       lineCount: number;
+      customerPrices: Map<
+        string,
+        { quantityMT: number; salesIncl: number }
+      >;
     }
   >();
   const nepaliSlots =
@@ -2540,11 +2602,28 @@ export async function getBranchProductSales(
         salesIncl: 0,
         salesExcl: 0,
         lineCount: 0,
+        customerPrices: new Map(),
       };
     agg.quantity += qty;
     agg.salesIncl += incl;
     agg.salesExcl += excl;
     agg.lineCount += 1;
+    const invoiceCustomer = String(line.sellToCustomerNo ?? "") || "(unknown customer)";
+    const invoiceCustomerPrice = agg.customerPrices.get(invoiceCustomer) ?? {
+      quantityMT: 0,
+      salesIncl: 0,
+    };
+    const invoiceMt = quantityToMetricTons(
+      uomIndex,
+      itemNo,
+      qty,
+      String(line.unitOfMeasureCode ?? ""),
+    );
+    if (invoiceMt.metricTons != null) {
+      invoiceCustomerPrice.quantityMT += invoiceMt.metricTons;
+    }
+    invoiceCustomerPrice.salesIncl += incl;
+    agg.customerPrices.set(invoiceCustomer, invoiceCustomerPrice);
     byItem.set(itemNo, agg);
 
     if (nepaliSlots && currentFyStart) {
@@ -2580,11 +2659,28 @@ export async function getBranchProductSales(
         salesIncl: 0,
         salesExcl: 0,
         lineCount: 0,
+        customerPrices: new Map(),
       };
     agg.quantity -= qty;
     agg.salesIncl -= Math.abs(postedLineSalesIncl(line));
     agg.salesExcl -= Math.abs(postedLineSalesExcl(line));
     agg.lineCount += 1;
+    const creditCustomer = String(line.sellToCustomerNo ?? "") || "(unknown customer)";
+    const creditCustomerPrice = agg.customerPrices.get(creditCustomer) ?? {
+      quantityMT: 0,
+      salesIncl: 0,
+    };
+    const creditMt = quantityToMetricTons(
+      uomIndex,
+      itemNo,
+      qty,
+      String(line.unitOfMeasureCode ?? ""),
+    );
+    if (creditMt.metricTons != null) {
+      creditCustomerPrice.quantityMT -= creditMt.metricTons;
+    }
+    creditCustomerPrice.salesIncl -= Math.abs(postedLineSalesIncl(line));
+    agg.customerPrices.set(creditCustomer, creditCustomerPrice);
     byItem.set(itemNo, agg);
 
     if (nepaliSlots && currentFyStart) {
@@ -2595,6 +2691,12 @@ export async function getBranchProductSales(
   const items = [...byItem.values()]
     .map((row) => {
       const mt = quantityToMetricTons(uomIndex, row.itemNo, row.quantity);
+      const customerAverageMt = averageCustomerSellingPrice(
+        [...row.customerPrices.values()].map((price) => ({
+          amount: price.salesIncl,
+          quantity: price.quantityMT,
+        })),
+      );
       return {
         itemNo: row.itemNo,
         name: row.name,
@@ -2603,6 +2705,11 @@ export async function getBranchProductSales(
         salesIncludingTax: round(row.salesIncl),
         salesExcludingTax: round(row.salesExcl),
         averagePricePerMTInclTax:
+          customerAverageMt.average == null
+            ? null
+            : round(customerAverageMt.average),
+        averageSellingPriceCustomerCount: customerAverageMt.customerCount,
+        weightedAveragePricePerMTInclTax:
           mt.metricTons && mt.metricTons !== 0
             ? round(row.salesIncl / mt.metricTons)
             : null,
@@ -2620,7 +2727,7 @@ export async function getBranchProductSales(
     period: period.label,
     fiscalYear: wantsMonthly ? fyLabel : null,
     displayNote:
-      "Primary quantity is quantityInvoicedMT (metric tons). Show salesIncludingTax (Incl. VAT).",
+      "Primary quantity is metric tons. averagePricePerMTInclTax is the equal-customer mean of each customer’s effective sales÷MT rate.",
     basis:
       "Posted invoice lines filtered by branch accountabilityCenter and product keyword.",
     totalSalesIncludingTax: round(totalIncl),
