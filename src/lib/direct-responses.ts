@@ -801,6 +801,10 @@ function extractProductQueryFromSalesMessage(message: string): string | null {
       /\b(sale|sales|sold|invoiced|amount|value|revenue|products?|items?)\b/gi,
       " ",
     )
+    .replace(
+      /\b(in\s+)?(metric\s+tons?|metric\s+tonnes?|mts?|tonnes?|tons?|kgs?|kilograms?)\b/gi,
+      " ",
+    )
     .replace(/\b(of|for|from|about|including|incl\.?|excl\.?|tax|vat|npr)\b/gi, " ")
     .replace(
       /\b(this\s+year|last\s+year|this\s+fiscal\s+year|current\s+fiscal\s+year|current\s+fy|fiscal\s+year|ytd|year\s+to\s+date|all\s+time|all\s+synced)\b/gi,
