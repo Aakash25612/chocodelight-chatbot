@@ -1,5 +1,9 @@
 import { formatAmount, formatNumber } from "./format";
-import { getProductSales, getReceivablesAging } from "./analytics";
+import {
+  getProductSales,
+  getReceivablesAging,
+  getNepaliMonthlySales,
+} from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
 import { getSalesByBranch, getBranchWiseSales, getPendingSauda, getChequeInHand } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
@@ -11,7 +15,7 @@ import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
 import { getMirror } from "./bc-mirror";
-import { getCurrentFiscalYearStart } from "./nepali-date";
+import { getCurrentFiscalYearStart, fiscalYearLabel } from "./nepali-date";
 
 type Customer = {
   number?: string;
@@ -63,6 +67,10 @@ export async function getDirectResponse(
 
     if (isChequeInHandQuery(normalized)) {
       return formatChequeInHand(message);
+    }
+
+    if (isCompanyFiscalYearSalesQuery(normalized)) {
+      return formatCompanyFiscalYearSales(message);
     }
 
     if (isProductSalesListQuery(normalized)) {
@@ -515,11 +523,129 @@ async function formatPendingSauda(message: string): Promise<string> {
   return lines.join("\n");
 }
 
+/** Company-wide FY / YTD / this year sales — not a product keyword. */
+function isCompanyFiscalYearSalesQuery(message: string): boolean {
+  if (!/\b(sale|sales|revenue|turnover)\b/.test(message)) return false;
+  if (isPendingSaudaQuery(message) || isReceivablesQuery(message)) return false;
+  if (isChequeInHandQuery(message)) return false;
+  if (extractBranchCodeQuery(message)) return false;
+  if (
+    /\b(branch|depot|area\s*wise|region\s*wise|salesperson|salesman)\b/.test(
+      message,
+    )
+  ) {
+    return false;
+  }
+  // Has a real product keyword → product sales, not company FY total
+  const productish = extractProductQueryFromSalesMessage(message);
+  if (productish && looksLikeProductQuery(productish)) return false;
+  if (productish && !isFiscalYearOnlyFragment(productish)) return false;
+
+  return (
+    /\b(this|current)\s+(fiscal\s+)?year\b/.test(message) ||
+    /\bfiscal\s+year\b/.test(message) ||
+    /\bytd\b/.test(message) ||
+    /\byear\s+to\s+date\b/.test(message) ||
+    /\btotal\s+(sale|sales|revenue)\b/.test(message) ||
+    /\b(sale|sales|revenue)\s+(so\s+far|till\s+date|to\s+date)\b/.test(message)
+  );
+}
+
+function isFiscalYearOnlyFragment(text: string): boolean {
+  const t = text.trim().toLowerCase();
+  return (
+    !t ||
+    /^(this|current|fiscal|year|fy|ytd|total)?(\s+(this|current|fiscal|year|fy|ytd|total))*$/i.test(
+      t,
+    ) ||
+    /^(fy\s*)?\d{4}(\s*\/\s*\d{2,4})?$/.test(t)
+  );
+}
+
+async function formatCompanyFiscalYearSales(message: string): Promise<string> {
+  const periodArgs = periodArgsFromProductSalesMessage(message);
+  const fyStart =
+    periodArgs.fiscalYearStart ?? getCurrentFiscalYearStart() ?? undefined;
+  const data = (await getNepaliMonthlySales(fyStart)) as {
+    error?: string;
+    fiscalYear?: string;
+    isCurrentFiscalYear?: boolean;
+    totalSalesIncludingTax?: number;
+    yearToDate?: {
+      salesIncludingTax?: number;
+      invoices?: number;
+      throughBsMonth?: string | null;
+    } | null;
+    months?: Array<{
+      month: string;
+      bsYear: number;
+      salesIncludingTax: number;
+      invoices: number;
+    }>;
+    asOf?: { ad?: string; bs?: string | null };
+    note?: string;
+    _syncedAt?: string;
+  };
+
+  if (data.error) return data.error;
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const fyLabel = data.fiscalYear ?? fiscalYearLabel(fyStart ?? 0);
+  const ytd = data.yearToDate;
+  const showYtd = Boolean(data.isCurrentFiscalYear && ytd);
+  const headline = showYtd
+    ? ytd?.salesIncludingTax
+    : data.totalSalesIncludingTax;
+
+  const lines = [
+    `**Total sales — Nepali FY ${fyLabel}** — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    showYtd
+      ? `**Year to date (Incl. VAT): ${formatAmount(headline ?? 0)}**${ytd?.throughBsMonth ? ` · through ${ytd.throughBsMonth}` : ""} · **${ytd?.invoices ?? 0} invoices**`
+      : `**FY total (Incl. VAT): ${formatAmount(headline ?? 0)}**`,
+    "",
+  ];
+
+  if (showYtd && data.totalSalesIncludingTax != null) {
+    lines.push(
+      `Full FY synced so far (Incl. VAT): **${formatAmount(data.totalSalesIncludingTax)}**`,
+      "",
+    );
+  }
+
+  if (data.asOf?.bs || data.asOf?.ad) {
+    lines.push(
+      `As of: ${data.asOf.bs ?? data.asOf.ad ?? ""}${data.asOf.bs && data.asOf.ad ? ` (${data.asOf.ad})` : ""}`,
+      "",
+    );
+  }
+
+  if (data.months?.length) {
+    lines.push(
+      "### Month-wise (Bikram Sambat)",
+      "",
+      "| Month | BS Year | Sales Incl. VAT (NPR) | Invoices |",
+      "|---|---:|---:|---:|",
+      ...data.months.map(
+        (row) =>
+          `| ${row.month} | ${row.bsYear} | ${formatAmount(row.salesIncludingTax)} | ${row.invoices} |`,
+      ),
+    );
+  }
+
+  if (data.note) {
+    lines.push("", `_${data.note}_`);
+  }
+
+  return lines.join("\n");
+}
+
 /** Product keyword sales listing — e.g. "mustard sale all items", "dip sales". */
 function isProductSalesListQuery(message: string): boolean {
   if (!/\b(sale|sales)\b/.test(message)) return false;
   if (isPendingSaudaQuery(message) || isReceivablesQuery(message)) return false;
   if (isChequeInHandQuery(message)) return false;
+  if (isCompanyFiscalYearSalesQuery(message)) return false;
   if (
     /\b(branch|depot|area\s*wise|region\s*wise|salesperson|salesman|customer\s+sales)\b/.test(
       message,
@@ -538,7 +664,10 @@ function isProductSalesListQuery(message: string): boolean {
     /\b(sale|sales)\s+of\s+\w+/.test(message) ||
     /\b\w[\w\s/-]{1,40}\s+(sale|sales)\b/.test(message);
 
-  return wantsItemList && !!extractProductQueryFromSalesMessage(message);
+  const productQuery = extractProductQueryFromSalesMessage(message);
+  if (!productQuery || isFiscalYearOnlyFragment(productQuery)) return false;
+
+  return wantsItemList;
 }
 
 function extractProductQueryFromSalesMessage(message: string): string | null {
@@ -557,7 +686,7 @@ function extractProductQueryFromSalesMessage(message: string): string | null {
     )
     .replace(/\b(of|for|from|about|including|incl\.?|excl\.?|tax|vat|npr)\b/gi, " ")
     .replace(
-      /\b(this\s+year|last\s+year|ytd|year\s+to\s+date|all\s+time|all\s+synced)\b/gi,
+      /\b(this\s+year|last\s+year|this\s+fiscal\s+year|current\s+fiscal\s+year|current\s+fy|fiscal\s+year|ytd|year\s+to\s+date|all\s+time|all\s+synced)\b/gi,
       " ",
     )
     .replace(/\bfy\s*\d{4}(?:\s*\/\s*\d{2,4})?\b/gi, " ")
@@ -581,7 +710,7 @@ function periodArgsFromProductSalesMessage(message: string): {
   const bsMatch = lower.match(/\b(208\d)\s*\/\s*\d{2,4}\b/);
   if (bsMatch) return { fiscalYearStart: Number(bsMatch[1]) };
   if (
-    /\b(this\s+year|ytd|year\s+to\s+date|current\s+(fy|fiscal\s+year))\b/.test(
+    /\b(this\s+year|this\s+fiscal\s+year|ytd|year\s+to\s+date|current\s+(fy|fiscal\s+year)|current\s+year)\b/.test(
       lower,
     )
   ) {
