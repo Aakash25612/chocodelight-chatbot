@@ -486,8 +486,8 @@ async function formatPendingSauda(message: string): Promise<string> {
 
   if (wantsAveragePrice || productQuery) {
     lines.push(
-      `**Equal-customer average price: ${formatAmount(s.averageUnitPrice ?? 0)} / order UOM** · **${formatAmount(s.averagePricePerMT ?? 0)} / MT**`,
-      `_Each of ${s.averageSellingPriceCustomerCount ?? 0} customer(s) receives equal weight, regardless of quantity purchased._`,
+      `**Avg price: ${formatAmount(s.averagePricePerMT ?? 0)} / MT**`,
+      `_Avg NPR/MT is the mean of each of ${s.averageSellingPriceCustomerCount ?? 0} customer(s)’ price per MT; quantity does not weight the average._`,
       `**Pending qty: ${formatMetricTons(s.totalPendingQuantityMT)} MT** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
       "",
     );
@@ -507,10 +507,9 @@ async function formatPendingSauda(message: string): Promise<string> {
     `| Total pending amount | **${formatAmount(s.totalPendingAmount ?? 0)}** |`,
   );
 
-  if (s.averageUnitPrice != null || s.averagePricePerMT != null) {
+  if (s.averagePricePerMT != null) {
     lines.push(
-      `| Equal-customer avg unit price (order UOM) | **${formatAmount(s.averageUnitPrice ?? 0)}** |`,
-      `| Equal-customer avg price per MT | **${formatAmount(s.averagePricePerMT ?? 0)}** |`,
+      `| Avg price per MT | **${formatAmount(s.averagePricePerMT ?? 0)}** |`,
     );
   }
 
@@ -533,7 +532,7 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Top items",
       "",
-      "| Item | Pending (MT) | Amount (NPR) | Equal-customer avg / MT |",
+      "| Item | Pending (MT) | Amount (NPR) | Avg NPR/MT |",
       "|---|---:|---:|---:|",
       ...data.topItems.slice(0, 20).map(
         (row) =>
@@ -1021,10 +1020,10 @@ async function formatProductSalesList(message: string): Promise<string> {
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
     `Period: **${data.period ?? "all synced dates"}**`,
-    `**Total ${returnsOnly ? "returns" : "sales"} (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty: ${formatMetricTons(data.totalQuantityInvoicedMT)} MT** · **Equal-customer avg: ${formatAmount(data.averagePricePerMTInclTax ?? 0)} / MT**`,
-    `_Average gives each of ${data.averageSellingPriceCustomerCount ?? 0} customer(s) equal weight; it is not total sales ÷ total MT._`,
+    `**Total ${returnsOnly ? "returns" : "sales"} (Incl. VAT): ${formatAmount(data.totalSalesIncludingTax ?? 0)}** · **Qty: ${formatMetricTons(data.totalQuantityInvoicedMT)} MT** · **Avg: ${formatAmount(data.averagePricePerMTInclTax ?? 0)} / MT**`,
+    `_Avg NPR/MT is the mean of each customer’s price per MT (${data.averageSellingPriceCustomerCount ?? 0} customer(s)); not total sales ÷ total MT._`,
     "",
-    `| # | Item | Qty (MT) | ${returnsOnly ? "Returns" : "Sales"} (Incl. VAT) | Equal-customer avg NPR/MT |`,
+    `| # | Item | Qty (MT) | ${returnsOnly ? "Returns" : "Sales"} (Incl. VAT) | Avg NPR/MT |`,
     "|---:|---|---:|---:|---:|",
     ...items.map(
       (row, index) =>

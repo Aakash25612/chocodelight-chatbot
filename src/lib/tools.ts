@@ -319,7 +319,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_product_sales",
     description:
-      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item. averagePricePerMTInclTax is an EQUAL-CUSTOMER average: calculate each customer's effective sales÷MT rate, then average those rates; never calculate the displayed average as total sales÷total MT. Primary quantity is MT.",
+      "Get invoiced product sales from posted invoice lines. Returns EVERY matching item. averagePricePerMTInclTax is the mean of each customer's NPR/MT rate (from unitPrice via UOM); never use total sales÷total MT as the displayed average. Primary quantity is MT.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
@@ -521,7 +521,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_pending_sauda",
     description:
-      "MANDATORY for any sauda/pending-sauda question. Locked sales orders where quantity − quantityShipped > 0. averagePricePerMT is an EQUAL-CUSTOMER average of each customer's effective pending amount÷pending MT rate, not total amount÷total MT. Pass productQuery for item names; never treat items as customers.",
+      "MANDATORY for any sauda/pending-sauda question. Locked sales orders where quantity − quantityShipped > 0. averagePricePerMT is the mean of each customer's NPR/MT rate (from unitPrice via UOM), not total amount÷total MT. Pass productQuery for item names; never treat items as customers.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

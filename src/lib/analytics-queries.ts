@@ -32,7 +32,13 @@ import {
   looksLikeProductQuery,
   matchesProductTerms,
 } from "./product-query";
-import { averageCustomerSellingPrice } from "./selling-price";
+import {
+  averageCustomerSellingPrice,
+  buildItemUnitPriceReference,
+  inferMissingUomPackFactor,
+  meanPositiveRates,
+  unitPriceToPerMetricTon,
+} from "./selling-price";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -96,6 +102,8 @@ type SalesOrderLine = {
   quantityShipped?: number;
   quantityInvoiced?: number;
   unitPrice?: number;
+  unitOfMeasureCode?: string;
+  unitOfMeasureId?: string;
 };
 
 type MrRecord = {
@@ -1702,6 +1710,7 @@ export async function getPendingSauda(
     pendingQuantityMT: number | null;
     unitPrice: number;
     pendingAmount: number;
+    inferredPackFactor: number;
   };
 
   const pendingLines: PendingLine[] = [];
@@ -1719,7 +1728,12 @@ export async function getPendingSauda(
       mtConvertible: boolean;
       customerPrices: Map<
         string,
-        { quantity: number; quantityMT: number; amount: number }
+        {
+          quantity: number;
+          quantityMT: number;
+          amount: number;
+          pricePerMTRates: number[];
+        }
       >;
     }
   >();
@@ -1733,10 +1747,17 @@ export async function getPendingSauda(
       pendingAmount: number;
       lineCount: number;
       orderCount: Set<string>;
+      pricePerMTRates: number[];
     }
   >();
   const ordersWithPending = new Set<string>();
   let skippedNonWeightLines = 0;
+  let inferredPackLines = 0;
+  const unitPriceReference = buildItemUnitPriceReference(
+    (linesPayload.value ?? []).filter((line) =>
+      lockedOrders.has(String(line.docNo ?? "").trim()),
+    ),
+  );
 
   function matchesProduct(itemNo: string, name: string): boolean {
     if (!productTerm) return true;
@@ -1774,9 +1795,34 @@ export async function getPendingSauda(
       "";
 
     const salesUnit = uomIndex.salesUnit.get(itemNo) || "KG";
-    const orderedMt = quantityToMetricTons(uomIndex, itemNo, quantity);
-    const shippedMt = quantityToMetricTons(uomIndex, itemNo, quantityShipped);
-    const pendingMt = quantityToMetricTons(uomIndex, itemNo, pendingQuantity);
+    const hasExplicitLineUom = Boolean(
+      String(line.unitOfMeasureCode ?? line.unitOfMeasureId ?? "").trim(),
+    );
+    const inferredPackFactor = hasExplicitLineUom
+      ? 1
+      : inferMissingUomPackFactor(
+          unitPrice,
+          unitPriceReference.get(itemNo),
+        );
+    if (inferredPackFactor > 1) inferredPackLines += 1;
+    const orderedMt = quantityToMetricTons(
+      uomIndex,
+      itemNo,
+      quantity * inferredPackFactor,
+      line.unitOfMeasureCode || salesUnit,
+    );
+    const shippedMt = quantityToMetricTons(
+      uomIndex,
+      itemNo,
+      quantityShipped * inferredPackFactor,
+      line.unitOfMeasureCode || salesUnit,
+    );
+    const pendingMt = quantityToMetricTons(
+      uomIndex,
+      itemNo,
+      pendingQuantity * inferredPackFactor,
+      line.unitOfMeasureCode || salesUnit,
+    );
     if (!pendingMt.convertible) skippedNonWeightLines += 1;
 
     ordersWithPending.add(orderNo);
@@ -1799,6 +1845,7 @@ export async function getPendingSauda(
       pendingQuantityMT: pendingMt.metricTons,
       unitPrice: round(unitPrice),
       pendingAmount,
+      inferredPackFactor,
     });
 
     const itemAgg =
@@ -1824,17 +1871,25 @@ export async function getPendingSauda(
     itemAgg.pendingAmount += pendingAmount;
     itemAgg.lineCount += 1;
     itemAgg.orderCount.add(orderNo);
+    const pricePerMT = unitPriceToPerMetricTon(
+      uomIndex,
+      itemNo,
+      unitPrice / inferredPackFactor,
+      String(line.unitOfMeasureCode ?? "") || salesUnit,
+    );
     const priceCustomerKey = custNo || orderNo;
     const itemCustomerPrice = itemAgg.customerPrices.get(priceCustomerKey) ?? {
       quantity: 0,
       quantityMT: 0,
       amount: 0,
+      pricePerMTRates: [],
     };
     itemCustomerPrice.quantity += pendingQuantity;
     if (pendingMt.metricTons != null) {
       itemCustomerPrice.quantityMT += pendingMt.metricTons;
     }
     itemCustomerPrice.amount += pendingAmount;
+    if (pricePerMT != null) itemCustomerPrice.pricePerMTRates.push(pricePerMT);
     itemAgg.customerPrices.set(priceCustomerKey, itemCustomerPrice);
     byItem.set(itemNo, itemAgg);
 
@@ -1848,6 +1903,7 @@ export async function getPendingSauda(
         pendingAmount: 0,
         lineCount: 0,
         orderCount: new Set<string>(),
+        pricePerMTRates: [],
       };
     custAgg.pendingQuantity += pendingQuantity;
     if (pendingMt.metricTons != null) {
@@ -1856,6 +1912,7 @@ export async function getPendingSauda(
     custAgg.pendingAmount += pendingAmount;
     custAgg.lineCount += 1;
     custAgg.orderCount.add(orderNo);
+    if (pricePerMT != null) custAgg.pricePerMTRates.push(pricePerMT);
     byCustomer.set(custNo, custAgg);
   }
 
@@ -1878,6 +1935,7 @@ export async function getPendingSauda(
   );
   const customerAverageMt = averageCustomerSellingPrice(
     [...byCustomer.values()].map((row) => ({
+      rate: meanPositiveRates(row.pricePerMTRates),
       amount: row.pendingAmount,
       quantity: row.pendingQuantityMT,
     })),
@@ -1893,9 +1951,12 @@ export async function getPendingSauda(
     currency: "NPR",
     quantityUnit: "MT",
     period: period.label,
-    dataQuality: { skippedMissingPostingDate },
+    dataQuality: {
+      skippedMissingPostingDate,
+      inferredPackLines,
+    },
     displayNote:
-      "Pending Sauda = Locked sales orders with unshipped qty. averagePricePerMT is the equal-customer mean: each customer’s pending amount÷pending MT rate is calculated first, then those customer rates are averaged. Large buyers do not receive extra weight.",
+      "Pending Sauda = Locked sales orders with unshipped qty. averagePricePerMT = mean of each customer's NPR/MT rate (from unitPrice÷MT via UOM; volume does not weight the average).",
     basis:
       "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped. MT from uoms.qtyPerUnitofMeasure against item base KG.",
     filter: {
@@ -1930,6 +1991,7 @@ export async function getPendingSauda(
         );
         const itemCustomerMt = averageCustomerSellingPrice(
           [...row.customerPrices.values()].map((price) => ({
+            rate: meanPositiveRates(price.pricePerMTRates),
             amount: price.amount,
             quantity: price.quantityMT,
           })),
@@ -2586,7 +2648,11 @@ export async function getBranchProductSales(
       lineCount: number;
       customerPrices: Map<
         string,
-        { quantityMT: number; salesIncl: number }
+        {
+          quantityMT: number;
+          salesIncl: number;
+          pricePerMTRates: number[];
+        }
       >;
     }
   >();
@@ -2645,6 +2711,7 @@ export async function getBranchProductSales(
     const invoiceCustomerPrice = agg.customerPrices.get(invoiceCustomer) ?? {
       quantityMT: 0,
       salesIncl: 0,
+      pricePerMTRates: [],
     };
     const invoiceMt = quantityToMetricTons(
       uomIndex,
@@ -2656,6 +2723,17 @@ export async function getBranchProductSales(
       invoiceCustomerPrice.quantityMT += invoiceMt.metricTons;
     }
     invoiceCustomerPrice.salesIncl += incl;
+    const invoicePricePerMT = unitPriceToPerMetricTon(
+      uomIndex,
+      itemNo,
+      Number(line.unitPrice ?? 0),
+      String(line.unitOfMeasureCode ?? ""),
+    );
+    if (invoicePricePerMT != null) {
+      const vatFactor =
+        Math.abs(excl) > 0 ? Math.abs(incl) / Math.abs(excl) : 1;
+      invoiceCustomerPrice.pricePerMTRates.push(invoicePricePerMT * vatFactor);
+    }
     agg.customerPrices.set(invoiceCustomer, invoiceCustomerPrice);
     byItem.set(itemNo, agg);
 
@@ -2702,6 +2780,7 @@ export async function getBranchProductSales(
     const creditCustomerPrice = agg.customerPrices.get(creditCustomer) ?? {
       quantityMT: 0,
       salesIncl: 0,
+      pricePerMTRates: [],
     };
     const creditMt = quantityToMetricTons(
       uomIndex,
@@ -2713,6 +2792,18 @@ export async function getBranchProductSales(
       creditCustomerPrice.quantityMT -= creditMt.metricTons;
     }
     creditCustomerPrice.salesIncl -= Math.abs(postedLineSalesIncl(line));
+    const creditExcl = Math.abs(postedLineSalesExcl(line));
+    const creditIncl = Math.abs(postedLineSalesIncl(line));
+    const creditPricePerMT = unitPriceToPerMetricTon(
+      uomIndex,
+      itemNo,
+      Number(line.unitPrice ?? 0),
+      String(line.unitOfMeasureCode ?? ""),
+    );
+    if (creditPricePerMT != null) {
+      const vatFactor = creditExcl > 0 ? creditIncl / creditExcl : 1;
+      creditCustomerPrice.pricePerMTRates.push(creditPricePerMT * vatFactor);
+    }
     agg.customerPrices.set(creditCustomer, creditCustomerPrice);
     byItem.set(itemNo, agg);
 
@@ -2726,6 +2817,7 @@ export async function getBranchProductSales(
       const mt = quantityToMetricTons(uomIndex, row.itemNo, row.quantity);
       const customerAverageMt = averageCustomerSellingPrice(
         [...row.customerPrices.values()].map((price) => ({
+          rate: meanPositiveRates(price.pricePerMTRates),
           amount: price.salesIncl,
           quantity: price.quantityMT,
         })),
@@ -2760,7 +2852,7 @@ export async function getBranchProductSales(
     period: period.label,
     fiscalYear: wantsMonthly ? fyLabel : null,
     displayNote:
-      "Primary quantity is metric tons. averagePricePerMTInclTax is the equal-customer mean of each customer’s effective sales÷MT rate.",
+      "Primary quantity is metric tons. averagePricePerMTInclTax is the mean of each customer's NPR/MT rate (from unitPrice via UOM; quantity does not weight the average).",
     basis:
       "Posted invoice lines filtered by branch accountabilityCenter and product keyword.",
     totalSalesIncludingTax: round(totalIncl),

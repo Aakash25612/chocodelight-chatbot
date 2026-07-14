@@ -4,7 +4,13 @@ import { matchesProductTerms } from "./product-query";
 import { formatAmount } from "./format";
 import { loadCustomersPayload } from "./derived-customers";
 import { type DatePeriodInput, periodFromInput } from "./date-period";
-import { averageCustomerSellingPrice } from "./selling-price";
+import {
+  averageCustomerSellingPrice,
+  buildItemUnitPriceReference,
+  inferMissingUomPackFactor,
+  meanPositiveRates,
+  unitPriceToPerMetricTon,
+} from "./selling-price";
 import {
   BS_MONTHS,
   fiscalYearLabel,
@@ -1136,6 +1142,8 @@ type SalesOrderLine = {
   quantity?: number;
   quantityInvoiced?: number;
   unitPrice?: number;
+  unitOfMeasureCode?: string;
+  unitOfMeasureId?: string;
 };
 
 type PostedInvoiceLine = {
@@ -1388,6 +1396,12 @@ export async function getProductSales(
   for (const item of itemsPayload.value ?? []) {
     if (item.number) itemMeta.set(item.number, item);
   }
+  const unitPriceReference = buildItemUnitPriceReference(
+    (linesPayload.value ?? []).filter((line) => {
+      const postingDate = orderDates.get(String(line.docNo ?? "")) ?? "";
+      return postingDate !== "" && period.matches(postingDate);
+    }),
+  );
 
   const query = (input?.query ?? "").trim().toLowerCase();
   const explicitItems = (input?.itemNumbers ?? []).map((n) => n.toUpperCase());
@@ -1430,6 +1444,8 @@ export async function getProductSales(
           quantityMT: number;
           salesIncl: number;
           salesExcl: number;
+          pricePerMTRatesIncl: number[];
+          pricePerMTRatesExcl: number[];
         }
       >;
     }
@@ -1447,6 +1463,8 @@ export async function getProductSales(
       quantityMT: number;
       salesIncl: number;
       salesExcl: number;
+      pricePerMTRatesIncl: number[];
+      pricePerMTRatesExcl: number[];
     }
   >();
   let earliest: string | null = null;
@@ -1461,6 +1479,8 @@ export async function getProductSales(
     customerNo?: string;
     unitOfMeasureCode?: string;
     category?: string;
+    unitPrice?: number;
+    inferredPackFactor?: number;
   }): void {
     if (!inputLine.postingDate || !period.matches(inputLine.postingDate)) return;
 
@@ -1472,7 +1492,7 @@ export async function getProductSales(
     const mt = quantityToMetricTons(
       uomIndex,
       inputLine.itemNo,
-      inputLine.quantity,
+      inputLine.quantity * (inputLine.inferredPackFactor ?? 1),
       inputLine.unitOfMeasureCode,
     );
     if (mt.metricTons != null) totalQuantityMT += mt.metricTons;
@@ -1513,11 +1533,34 @@ export async function getProductSales(
       quantityMT: 0,
       salesIncl: 0,
       salesExcl: 0,
+      pricePerMTRatesIncl: [],
+      pricePerMTRatesExcl: [],
     };
     customerAgg.quantity += inputLine.quantity;
     if (mt.metricTons != null) customerAgg.quantityMT += mt.metricTons;
     customerAgg.salesIncl += inputLine.salesIncl;
     customerAgg.salesExcl += inputLine.salesExcl;
+    const unitPrice =
+      inputLine.unitPrice != null && Number.isFinite(inputLine.unitPrice)
+        ? Math.abs(inputLine.unitPrice)
+        : inputLine.quantity !== 0
+          ? Math.abs(inputLine.salesExcl / inputLine.quantity)
+          : 0;
+    const pricePerMTExcl = unitPriceToPerMetricTon(
+      uomIndex,
+      inputLine.itemNo,
+      unitPrice / (inputLine.inferredPackFactor ?? 1),
+      inputLine.unitOfMeasureCode,
+    );
+    // Incl-VAT rate scales excl unitPrice by this line's VAT factor when available.
+    const vatFactor =
+      Math.abs(inputLine.salesExcl) > 0
+        ? Math.abs(inputLine.salesIncl) / Math.abs(inputLine.salesExcl)
+        : 1;
+    if (pricePerMTExcl != null) {
+      customerAgg.pricePerMTRatesExcl.push(pricePerMTExcl);
+      customerAgg.pricePerMTRatesIncl.push(pricePerMTExcl * vatFactor);
+    }
     agg.customerPrices.set(customerKey, customerAgg);
 
     const overallCustomer = customerPrices.get(customerKey) ?? {
@@ -1525,11 +1568,17 @@ export async function getProductSales(
       quantityMT: 0,
       salesIncl: 0,
       salesExcl: 0,
+      pricePerMTRatesIncl: [],
+      pricePerMTRatesExcl: [],
     };
     overallCustomer.quantity += inputLine.quantity;
     if (mt.metricTons != null) overallCustomer.quantityMT += mt.metricTons;
     overallCustomer.salesIncl += inputLine.salesIncl;
     overallCustomer.salesExcl += inputLine.salesExcl;
+    if (pricePerMTExcl != null) {
+      overallCustomer.pricePerMTRatesExcl.push(pricePerMTExcl);
+      overallCustomer.pricePerMTRatesIncl.push(pricePerMTExcl * vatFactor);
+    }
     customerPrices.set(customerKey, overallCustomer);
     byItem.set(inputLine.itemNo, agg);
   }
@@ -1552,6 +1601,7 @@ export async function getProductSales(
         customerNo: String(line.sellToCustomerNo ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
         category: String(line.itemCategoryCode ?? ""),
+        unitPrice: Number(line.unitPrice ?? 0),
       });
     }
 
@@ -1572,6 +1622,7 @@ export async function getProductSales(
         postingDate: String(line.postingDate ?? ""),
         customerNo: String(line.sellToCustomerNo ?? ""),
         unitOfMeasureCode: String(line.unitOfMeasureCode ?? ""),
+        unitPrice: Number(line.unitPrice ?? 0),
       });
     }
   } else {
@@ -1583,6 +1634,15 @@ export async function getProductSales(
       if (!itemNo || !matchesItem(itemNo)) continue;
 
       const salesExcl = qtyInvoiced * Number(line.unitPrice ?? 0);
+      const hasExplicitLineUom = Boolean(
+        String(line.unitOfMeasureCode ?? line.unitOfMeasureId ?? "").trim(),
+      );
+      const inferredPackFactor = hasExplicitLineUom
+        ? 1
+        : inferMissingUomPackFactor(
+            Number(line.unitPrice ?? 0),
+            unitPriceReference.get(itemNo),
+          );
       addLine({
         itemNo,
         quantity: qtyInvoiced,
@@ -1590,6 +1650,9 @@ export async function getProductSales(
         salesIncl: salesExcl,
         postingDate: orderDates.get(String(line.docNo ?? "")) ?? "",
         customerNo: orderCustomers.get(String(line.docNo ?? "")) ?? "",
+        unitPrice: Number(line.unitPrice ?? 0),
+        unitOfMeasureCode: line.unitOfMeasureCode,
+        inferredPackFactor,
       });
     }
   }
@@ -1610,12 +1673,14 @@ export async function getProductSales(
       );
       const customerMtIncl = averageCustomerSellingPrice(
         [...row.customerPrices.values()].map((price) => ({
+          rate: meanPositiveRates(price.pricePerMTRatesIncl),
           amount: price.salesIncl,
           quantity: price.quantityMT,
         })),
       );
       const customerMtExcl = averageCustomerSellingPrice(
         [...row.customerPrices.values()].map((price) => ({
+          rate: meanPositiveRates(price.pricePerMTRatesExcl),
           amount: price.salesExcl,
           quantity: price.quantityMT,
         })),
@@ -1663,12 +1728,14 @@ export async function getProductSales(
   );
   const overallMtIncl = averageCustomerSellingPrice(
     [...customerPrices.values()].map((price) => ({
+      rate: meanPositiveRates(price.pricePerMTRatesIncl),
       amount: price.salesIncl,
       quantity: price.quantityMT,
     })),
   );
   const overallMtExcl = averageCustomerSellingPrice(
     [...customerPrices.values()].map((price) => ({
+      rate: meanPositiveRates(price.pricePerMTRatesExcl),
       amount: price.salesExcl,
       quantity: price.quantityMT,
     })),
@@ -1687,7 +1754,7 @@ export async function getProductSales(
     itemNumbers: explicitItems.length ? explicitItems : null,
     quantityUnit: "MT",
     displayNote:
-      'List EVERY item in items (full table) — never top 10 only. Primary quantity is metric tons. averagePricePerMTInclTax is the equal-customer mean: calculate each customer’s sales÷MT rate, then average those customer rates so large buyers do not dominate.',
+      'List EVERY item in items (full table) — never top 10 only. Primary quantity is metric tons. averagePricePerMTInclTax is the mean of each customer’s NPR/MT rate (from unitPrice via UOM; quantity does not weight the average).',
     itemCount: items.length,
     basis: usePostedInvoices
       ? "Posted sales invoice lines: Incl. VAT = amountIncludingVAT; net excl. VAT (on request) = line.amount. Never use lineAmountExclVAT (pre-discount list price)."
