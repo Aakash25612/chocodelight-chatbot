@@ -2,6 +2,7 @@ import { formatAmount } from "./format";
 import { getReceivablesAging } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
 import { getSalesByBranch, getBranchWiseSales, getPendingSauda } from "./analytics-queries";
+import { formatMetricTons } from "./uom-convert";
 import { resolveBranch } from "./branches";
 import { getCompany, normalizeCompanyKey } from "./companies";
 import { runWithCompany, getActiveCompany } from "./company-context";
@@ -148,18 +149,22 @@ async function formatPendingSauda(message: string): Promise<string> {
       ordersWithPending?: number;
       pendingLineCount?: number;
       totalPendingQuantity?: number;
+      totalPendingQuantityMT?: number;
       totalPendingAmount?: number;
+      skippedNonWeightLines?: number;
     };
     topItems?: Array<{
       itemNo: string;
       itemName: string;
       pendingQuantity: number;
+      pendingQuantityMT?: number | null;
       pendingAmount: number;
     }>;
     topCustomers?: Array<{
       customerNo: string;
       customerName: string;
       pendingQuantity: number;
+      pendingQuantityMT?: number;
       pendingAmount: number;
       orderCount: number;
     }>;
@@ -169,9 +174,13 @@ async function formatPendingSauda(message: string): Promise<string> {
       customerName: string;
       itemName: string;
       itemNo: string;
+      salesUnit?: string;
       pendingQuantity: number;
+      pendingQuantityMT?: number | null;
       quantity: number;
+      quantityMT?: number | null;
       quantityShipped: number;
+      quantityShippedMT?: number | null;
       unitPrice?: number;
       pendingAmount: number;
       branchName?: string;
@@ -222,29 +231,37 @@ async function formatPendingSauda(message: string): Promise<string> {
   const lines = [
     `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
     "",
-    `**Pending quantity: ${formatAmount(s.totalPendingQuantity ?? 0)}** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
+    `**Pending quantity: ${formatMetricTons(s.totalPendingQuantityMT)} MT** · **Pending amount: ${formatAmount(s.totalPendingAmount ?? 0)}**`,
     "",
     "| Metric | Value |",
     "|---|---:|",
     `| Orders with pending qty | ${s.ordersWithPending ?? 0} |`,
     `| Pending lines | ${s.pendingLineCount ?? 0} |`,
-    `| Total pending quantity | **${formatAmount(s.totalPendingQuantity ?? 0)}** |`,
+    `| Total pending quantity | **${formatMetricTons(s.totalPendingQuantityMT)} MT** |`,
     `| Total pending amount | **${formatAmount(s.totalPendingAmount ?? 0)}** |`,
     "",
+    "Quantities are in **metric tons (MT)** — converted from item UOM → KG ÷ 1,000 (e.g. BAG/PKT/POUCH/QNT).",
     "Rule: `orderStatus = Locked` and `quantity − quantityShipped > 0`. Amount = pending qty × unit price.",
     "This is **not** customer outstanding / receivable balance.",
   ];
+
+  if (s.skippedNonWeightLines) {
+    lines.push(
+      "",
+      `_Note: ${s.skippedNonWeightLines} non-weight line(s) (PCS/SET/MTR etc.) could not be converted to MT and are excluded from the MT total._`,
+    );
+  }
 
   if (data.topItems?.length) {
     lines.push(
       "",
       "### Top items",
       "",
-      "| Item | Pending qty | Amount (NPR) |",
+      "| Item | Pending (MT) | Amount (NPR) |",
       "|---|---:|---:|",
       ...data.topItems.slice(0, 10).map(
         (row) =>
-          `| ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }
@@ -254,11 +271,11 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Top customers",
       "",
-      "| Customer | Orders | Pending qty | Amount (NPR) |",
+      "| Customer | Orders | Pending (MT) | Amount (NPR) |",
       "|---|---:|---:|---:|",
       ...data.topCustomers.slice(0, 10).map(
         (row) =>
-          `| ${escapeCell(row.customerName || row.customerNo)} | ${row.orderCount} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.customerName || row.customerNo)} | ${row.orderCount} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }
@@ -268,11 +285,11 @@ async function formatPendingSauda(message: string): Promise<string> {
       "",
       "### Detail lines",
       "",
-      "| Order | Date | Customer | Item | Ordered | Shipped | Pending | Amount |",
+      "| Order | Date | Customer | Item | Ordered (MT) | Shipped (MT) | Pending (MT) | Amount |",
       "|---|---|---|---|---:|---:|---:|---:|",
       ...data.lines.slice(0, 25).map(
         (row) =>
-          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatAmount(row.quantity)} | ${formatAmount(row.quantityShipped)} | ${formatAmount(row.pendingQuantity)} | ${formatAmount(row.pendingAmount)} |`,
+          `| ${escapeCell(row.orderNo)} | ${row.postingDate ?? ""} | ${escapeCell(row.customerName)} | ${escapeCell(row.itemName || row.itemNo)} | ${formatMetricTons(row.quantityMT)} | ${formatMetricTons(row.quantityShippedMT)} | ${formatMetricTons(row.pendingQuantityMT)} | ${formatAmount(row.pendingAmount)} |`,
       ),
     );
   }

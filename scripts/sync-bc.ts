@@ -21,9 +21,16 @@ function loadEnvFile(path: string) {
 loadEnvFile(resolve(process.cwd(), ".env.local"));
 
 async function main() {
+  const { isCompanyKey } = await import("../src/lib/companies");
   const { runFullSync } = await import("../src/lib/bc-sync");
-  console.log("Starting BC → Supabase sync…");
-  const result = await runFullSync();
+  const arg = process.argv[2];
+  const companyFilter = isCompanyKey(arg) ? arg : undefined;
+  console.log(
+    companyFilter
+      ? `Starting BC → Supabase sync for ${companyFilter}…`
+      : "Starting BC → Supabase sync for all companies…",
+  );
+  const result = await runFullSync(companyFilter);
   console.log(JSON.stringify(result, null, 2));
 }
 

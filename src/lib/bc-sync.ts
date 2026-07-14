@@ -400,14 +400,19 @@ async function syncCompany(): Promise<CompanySyncResult> {
   return { company, synced, errors };
 }
 
-export async function syncBcToSupabase(): Promise<{
+export async function syncBcToSupabase(
+  companyFilter?: CompanyKey,
+): Promise<{
   companies: CompanySyncResult[];
   synced: string[];
   errors: { company: CompanyKey; entity: string; error: string }[];
 }> {
   const companies: CompanySyncResult[] = [];
+  const targets = listCompanies().filter(
+    (config) => !companyFilter || config.key === companyFilter,
+  );
 
-  for (const config of listCompanies()) {
+  for (const config of targets) {
     const result = await runWithCompany(config.key, () => syncCompany());
     companies.push(result);
   }
@@ -526,11 +531,13 @@ export async function processWriteQueue(limit = 20): Promise<{
   return { processed, failed };
 }
 
-export async function runFullSync(): Promise<{
+export async function runFullSync(
+  companyFilter?: CompanyKey,
+): Promise<{
   sync: Awaited<ReturnType<typeof syncBcToSupabase>>;
   queue: Awaited<ReturnType<typeof processWriteQueue>>;
 }> {
-  const sync = await syncBcToSupabase();
+  const sync = await syncBcToSupabase(companyFilter);
   const queue = await processWriteQueue();
   return { sync, queue };
 }

@@ -25,6 +25,10 @@ import {
 } from "./branch-sales-cache";
 import { type DatePeriodInput, periodFromInput, withDefaultNepaliFiscalYear } from "./date-period";
 import {
+  loadUomIndex,
+  quantityToMetricTons,
+} from "./uom-convert";
+import {
   BS_MONTHS,
   fiscalYearLabel,
   getCurrentFiscalYearStart,
@@ -1564,12 +1568,14 @@ export async function getPendingSauda(input?: {
     customerName = resolved.name;
   }
 
-  const [ordersPayload, linesPayload, itemsPayload, names] = await Promise.all([
-    loadSalesOrders(),
-    loadSalesOrderLines(),
-    loadItems(),
-    buildCustomerNameMap(),
-  ]);
+  const [ordersPayload, linesPayload, itemsPayload, names, uomIndex] =
+    await Promise.all([
+      loadSalesOrders(),
+      loadSalesOrderLines(),
+      loadItems(),
+      buildCustomerNameMap(),
+      loadUomIndex(),
+    ]);
   if (ordersPayload.error) return { error: ordersPayload.error };
   if (linesPayload.error) return { error: linesPayload.error };
 
@@ -1605,9 +1611,13 @@ export async function getPendingSauda(input?: {
     itemNo: string;
     itemName: string;
     lineNo: number;
+    salesUnit: string;
     quantity: number;
     quantityShipped: number;
     pendingQuantity: number;
+    quantityMT: number | null;
+    quantityShippedMT: number | null;
+    pendingQuantityMT: number | null;
     unitPrice: number;
     pendingAmount: number;
   };
@@ -1618,10 +1628,13 @@ export async function getPendingSauda(input?: {
     {
       itemNo: string;
       itemName: string;
+      salesUnit: string;
       pendingQuantity: number;
+      pendingQuantityMT: number;
       pendingAmount: number;
       lineCount: number;
       orderCount: Set<string>;
+      mtConvertible: boolean;
     }
   >();
   const byCustomer = new Map<
@@ -1630,12 +1643,14 @@ export async function getPendingSauda(input?: {
       customerNo: string;
       customerName: string;
       pendingQuantity: number;
+      pendingQuantityMT: number;
       pendingAmount: number;
       lineCount: number;
       orderCount: Set<string>;
     }
   >();
   const ordersWithPending = new Set<string>();
+  let skippedNonWeightLines = 0;
 
   function matchesProduct(itemNo: string, name: string): boolean {
     if (!productTerm) return true;
@@ -1666,6 +1681,12 @@ export async function getPendingSauda(input?: {
       branchCodeFromDocument(order.number) ||
       "";
 
+    const salesUnit = uomIndex.salesUnit.get(itemNo) || "KG";
+    const orderedMt = quantityToMetricTons(uomIndex, itemNo, quantity);
+    const shippedMt = quantityToMetricTons(uomIndex, itemNo, quantityShipped);
+    const pendingMt = quantityToMetricTons(uomIndex, itemNo, pendingQuantity);
+    if (!pendingMt.convertible) skippedNonWeightLines += 1;
+
     ordersWithPending.add(orderNo);
     pendingLines.push({
       orderNo,
@@ -1677,9 +1698,13 @@ export async function getPendingSauda(input?: {
       itemNo,
       itemName,
       lineNo: Number(line.lineNo ?? 0),
+      salesUnit,
       quantity: round(quantity),
       quantityShipped: round(quantityShipped),
       pendingQuantity: round(pendingQuantity),
+      quantityMT: orderedMt.metricTons,
+      quantityShippedMT: shippedMt.metricTons,
+      pendingQuantityMT: pendingMt.metricTons,
       unitPrice: round(unitPrice),
       pendingAmount,
     });
@@ -1689,12 +1714,20 @@ export async function getPendingSauda(input?: {
       {
         itemNo,
         itemName,
+        salesUnit,
         pendingQuantity: 0,
+        pendingQuantityMT: 0,
         pendingAmount: 0,
         lineCount: 0,
         orderCount: new Set<string>(),
+        mtConvertible: pendingMt.convertible,
       };
     itemAgg.pendingQuantity += pendingQuantity;
+    if (pendingMt.metricTons != null) {
+      itemAgg.pendingQuantityMT += pendingMt.metricTons;
+    } else {
+      itemAgg.mtConvertible = false;
+    }
     itemAgg.pendingAmount += pendingAmount;
     itemAgg.lineCount += 1;
     itemAgg.orderCount.add(orderNo);
@@ -1706,11 +1739,15 @@ export async function getPendingSauda(input?: {
         customerNo: custNo,
         customerName: names.get(custNo) ?? "",
         pendingQuantity: 0,
+        pendingQuantityMT: 0,
         pendingAmount: 0,
         lineCount: 0,
         orderCount: new Set<string>(),
       };
     custAgg.pendingQuantity += pendingQuantity;
+    if (pendingMt.metricTons != null) {
+      custAgg.pendingQuantityMT += pendingMt.metricTons;
+    }
     custAgg.pendingAmount += pendingAmount;
     custAgg.lineCount += 1;
     custAgg.orderCount.add(orderNo);
@@ -1722,16 +1759,20 @@ export async function getPendingSauda(input?: {
   const totalPendingQuantity = round(
     pendingLines.reduce((sum, row) => sum + row.pendingQuantity, 0),
   );
+  const totalPendingQuantityMT = round(
+    pendingLines.reduce((sum, row) => sum + (row.pendingQuantityMT ?? 0), 0),
+  );
   const totalPendingAmount = round(
     pendingLines.reduce((sum, row) => sum + row.pendingAmount, 0),
   );
 
   return {
     currency: "NPR",
+    quantityUnit: "MT",
     displayNote:
-      "Pending Sauda = Locked sales orders with quantity still to ship (quantity − quantityShipped > 0). Amount = pendingQuantity × unitPrice from the order line.",
+      "Pending Sauda = Locked sales orders with unshipped qty. Primary quantity is metric tons (MT) via item UOM→KG÷1000. Amount = pendingQuantity × unitPrice (order-line UOM). Non-weight items (PCS/SET/MTR) are skipped from MT totals.",
     basis:
-      "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped.",
+      "Synced salesOrders (orderStatus=Locked) joined to salesOrderLines where quantity > quantityShipped. MT from uoms.qtyPerUnitofMeasure against item base KG.",
     filter: {
       customerNo: customerNo ?? null,
       customerName: customerName || null,
@@ -1742,13 +1783,19 @@ export async function getPendingSauda(input?: {
       lockedOrdersScanned: lockedOrders.size,
       ordersWithPending: ordersWithPending.size,
       pendingLineCount: pendingLines.length,
+      totalPendingQuantityMT,
       totalPendingQuantity,
       totalPendingAmount,
+      skippedNonWeightLines,
     },
     topItems: [...byItem.values()]
       .map((row) => ({
         itemNo: row.itemNo,
         itemName: row.itemName,
+        salesUnit: row.salesUnit,
+        pendingQuantityMT: row.mtConvertible
+          ? round(row.pendingQuantityMT)
+          : null,
         pendingQuantity: round(row.pendingQuantity),
         pendingAmount: round(row.pendingAmount),
         lineCount: row.lineCount,
@@ -1760,6 +1807,7 @@ export async function getPendingSauda(input?: {
       .map((row) => ({
         customerNo: row.customerNo,
         customerName: row.customerName,
+        pendingQuantityMT: round(row.pendingQuantityMT),
         pendingQuantity: round(row.pendingQuantity),
         pendingAmount: round(row.pendingAmount),
         lineCount: row.lineCount,

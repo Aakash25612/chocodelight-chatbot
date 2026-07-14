@@ -512,7 +512,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_pending_sauda",
     description:
-      "MANDATORY for any 'sauda' / 'pending sauda' question (e.g. 'Sri Kamdhenu Suppliers tell his pending sauda'). Locked sales orders where quantity − quantityShipped > 0. Returns pending quantity, amount (qty×unitPrice), item name, customer, order no. NEVER confuse with outstanding receivables or customer statement. Pass query=customer name when a party is named.",
+      "MANDATORY for any 'sauda' / 'pending sauda' question (e.g. 'Sri Kamdhenu Suppliers tell his pending sauda'). Locked sales orders where quantity − quantityShipped > 0. Primary quantity fields are metric tons (pendingQuantityMT / totalPendingQuantityMT). NEVER show bags/pcs/kg as the main qty — use MT. Amount = pendingQuantity × unitPrice. NEVER confuse with outstanding receivables or customer statement. Pass query=customer name when a party is named.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
