@@ -1,7 +1,7 @@
 import { formatAmount, formatNumber } from "./format";
 import { getProductSales, getReceivablesAging } from "./analytics";
 import { loadCustomersPayload } from "./derived-customers";
-import { getSalesByBranch, getBranchWiseSales, getPendingSauda } from "./analytics-queries";
+import { getSalesByBranch, getBranchWiseSales, getPendingSauda, getChequeInHand } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
 import {
   cleanProductQueryFragment,
@@ -61,6 +61,10 @@ export async function getDirectResponse(
       return formatPendingSauda(message);
     }
 
+    if (isChequeInHandQuery(normalized)) {
+      return formatChequeInHand(message);
+    }
+
     if (isProductSalesListQuery(normalized)) {
       return formatProductSalesList(message);
     }
@@ -83,7 +87,10 @@ export async function getDirectResponse(
 }
 
 function extractBranchFromMessage(message: string): string | null {
-  if (isReceivablesQuery(message.trim().toLowerCase())) return null;
+  const normalized = message.trim().toLowerCase();
+  if (isReceivablesQuery(normalized)) return null;
+  if (isChequeInHandQuery(normalized)) return null;
+  if (isPendingSaudaQuery(normalized)) return null;
 
   const code = extractBranchCodeQuery(message);
   if (code) return code;
@@ -97,6 +104,158 @@ function extractBranchFromMessage(message: string): string | null {
   }
 
   return null;
+}
+
+function isChequeInHandQuery(message: string): boolean {
+  return (
+    /\bcheque\s+in\s+hand\b/.test(message) ||
+    /\bcheck\s+in\s+hand\b/.test(message) ||
+    /\bcheques?\s+in\s+hand\b/.test(message) ||
+    (/\bcheques?\b/.test(message) &&
+      /\b(received|not\s+deposit|undeposited|in\s+hand)\b/.test(message)) ||
+    /\bcheque\s+received\b/.test(message)
+  );
+}
+
+async function formatChequeInHand(message: string): Promise<string> {
+  const branchFromCode = extractBranchCodeQuery(message);
+  const branchResolved = branchFromCode
+    ? resolveBranch({ branchCode: branchFromCode })
+    : resolveBranch({ query: message });
+  const branchCode =
+    !("error" in branchResolved) &&
+    (branchFromCode ||
+      /\b(branch|depo(?:t)?|balkot|bhairahawa|butwal|pokhara|nepalgunj|birgunj)\b/i.test(
+        message,
+      ))
+      ? branchResolved.code
+      : undefined;
+
+  let customerQuery: string | undefined;
+  if (!branchCode) {
+    customerQuery =
+      message
+        .replace(/\b(show|tell|give|get|list|check|what(?:'s| is)?|the|total|please|pls)\b/gi, " ")
+        .replace(
+          /\b(cheque|check|cheques|in\s+hand|received|not\s+deposited|undeposited|status|value|amount|of|for|from)\b/gi,
+          " ",
+        )
+        .replace(/\s+/g, " ")
+        .trim() || undefined;
+    if (customerQuery && customerQuery.length < 2) customerQuery = undefined;
+  }
+
+  const data = (await getChequeInHand({
+    branchCode,
+    query: customerQuery,
+    limit: 50,
+  })) as {
+    error?: string;
+    candidates?: Array<{ customerNo?: string; name?: string }>;
+    filter?: {
+      customerNo?: string | null;
+      customerName?: string | null;
+      branchCode?: string | null;
+      branchName?: string | null;
+      status?: string | null;
+    };
+    matchCount?: number;
+    totalAmount?: number;
+    topCustomers?: Array<{
+      customerNo: string;
+      customerName: string;
+      amount: number;
+      count: number;
+    }>;
+    records?: Array<{
+      mrNo?: number;
+      customerName?: string;
+      amount: number;
+      chequeNo?: string;
+      drawnBank?: string;
+      receivedDate?: string;
+      dueDate?: string;
+      status?: string;
+    }>;
+    displayNote?: string;
+    _syncedAt?: string;
+  };
+
+  if (data.error) {
+    if (data.candidates?.length) {
+      return [
+        data.error,
+        "",
+        "| Customer No. | Name |",
+        "|---|---|",
+        ...data.candidates.map(
+          (c) => `| ${c.customerNo ?? ""} | ${escapeCell(c.name ?? "")} |`,
+        ),
+      ].join("\n");
+    }
+    return data.error;
+  }
+
+  const companyLabel = getCompany(getActiveCompany()).displayName;
+  const who =
+    data.filter?.branchName ||
+    data.filter?.branchCode ||
+    data.filter?.customerName ||
+    data.filter?.customerNo ||
+    "all";
+  const title = `**Cheque in hand — ${who}**`;
+
+  if ((data.matchCount ?? 0) === 0) {
+    return [
+      `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
+      "",
+      'No MR rows with status **Cheque Received** (received, not deposited) for this filter.',
+    ].join("\n");
+  }
+
+  const lines = [
+    `${title} — ${companyLabel}${formatSync(data._syncedAt)}`,
+    "",
+    `Status: **Cheque Received** (not deposited / not cleared)`,
+    `**Total cheque in hand: ${formatAmount(data.totalAmount ?? 0)}** · **${data.matchCount ?? 0} cheque(s)**`,
+    "",
+  ];
+
+  if (data.filter?.branchCode) {
+    lines.push(
+      `_Branch filter uses each customer's primary sales depot from posted invoices (MR has no depot field)._`,
+      "",
+    );
+  }
+
+  if (data.topCustomers?.length && !data.filter?.customerNo) {
+    lines.push(
+      "### By customer",
+      "",
+      "| Customer | Cheques | Amount (NPR) |",
+      "|---|---:|---:|",
+      ...data.topCustomers.slice(0, 15).map(
+        (row) =>
+          `| ${escapeCell(row.customerName || row.customerNo)} | ${row.count} | ${formatAmount(row.amount)} |`,
+      ),
+      "",
+    );
+  }
+
+  if (data.records?.length) {
+    lines.push(
+      "### Cheques",
+      "",
+      "| MR | Customer | Received | Due | Cheque No | Bank | Amount |",
+      "|---|---|---|---|---|---|---:|",
+      ...data.records.slice(0, 40).map(
+        (row) =>
+          `| ${row.mrNo ?? ""} | ${escapeCell(row.customerName ?? "")} | ${row.receivedDate ?? ""} | ${row.dueDate ?? ""} | ${escapeCell(row.chequeNo ?? "")} | ${escapeCell(row.drawnBank ?? "")} | ${formatAmount(row.amount)} |`,
+      ),
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function isPendingSaudaQuery(message: string): boolean {
@@ -360,6 +519,7 @@ async function formatPendingSauda(message: string): Promise<string> {
 function isProductSalesListQuery(message: string): boolean {
   if (!/\b(sale|sales)\b/.test(message)) return false;
   if (isPendingSaudaQuery(message) || isReceivablesQuery(message)) return false;
+  if (isChequeInHandQuery(message)) return false;
   if (
     /\b(branch|depot|area\s*wise|region\s*wise|salesperson|salesman|customer\s+sales)\b/.test(
       message,
@@ -368,6 +528,7 @@ function isProductSalesListQuery(message: string): boolean {
     return false;
   }
   if (/\b(month\s*wise|month-by-month|by\s+month)\b/.test(message)) return false;
+  if (extractBranchCodeQuery(message)) return false;
 
   const wantsItemList =
     /\ball\s+items?\b/.test(message) ||

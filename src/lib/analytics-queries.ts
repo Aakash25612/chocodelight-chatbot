@@ -101,8 +101,13 @@ type MrRecord = {
   customerNo?: string;
   customerName?: string;
   paymentMode?: string;
+  paymentModeNo?: string;
+  drawnBank?: string;
+  drawnBankName?: string;
+  depositedBank?: string;
   receivedEnglishiDate?: string;
   clearedEnglishiDate?: string;
+  chequeDueEnglishDate?: string;
 };
 
 type MirrorPayload<T> = {
@@ -3269,60 +3274,214 @@ export async function getSalesByBranch(
 export async function getMrRecords(input?: {
   query?: string;
   customerNo?: string;
+  branchCode?: string;
   year?: number;
   status?: string;
   limit?: number;
 }): Promise<unknown> {
-  const limit = Math.min(input?.limit ?? 20, 50);
+  const limit = Math.min(input?.limit ?? 40, 100);
   let customerNo = input?.customerNo;
-  if (!customerNo && input?.query) {
-    const resolved = await resolveCustomerNo({ query: input.query });
-    if ("error" in resolved) return resolved;
-    customerNo = resolved.customerNo;
+  let customerName = "";
+  let branchCode: string | null = input?.branchCode?.trim()
+    ? normalizeBranchCode(input.branchCode)
+    : null;
+
+  if (input?.branchCode?.trim()) {
+    const branch = resolveBranch({ branchCode: input.branchCode });
+    if ("error" in branch) return branch;
+    branchCode = branch.code;
+  }
+
+  if (!customerNo && input?.query?.trim() && !branchCode) {
+    const q = input.query.trim();
+    const looksLikeBranch =
+      /^[A-Za-z]{1,3}$/.test(q) ||
+      /^(?:code|branch|depo(?:t)?)\s+/i.test(q) ||
+      /\bbalkot\b/i.test(q);
+    if (looksLikeBranch) {
+      const branch = resolveBranch({ query: q });
+      if (!("error" in branch)) branchCode = branch.code;
+    }
+    if (!branchCode) {
+      const resolved = await resolveCustomerNo({ query: q });
+      if ("error" in resolved) {
+        const branch = resolveBranch({ query: q });
+        if (!("error" in branch)) branchCode = branch.code;
+        else return resolved;
+      } else {
+        customerNo = resolved.customerNo;
+        customerName = resolved.name;
+      }
+    }
+  } else if (customerNo) {
+    const resolved = await resolveCustomerNo({ customerNo });
+    if (!("error" in resolved)) customerName = resolved.name;
   }
 
   const payload = await loadMr();
   if (payload.error) return { error: payload.error };
 
-  const records = (payload.value ?? [])
-    .filter((row) => {
-      if (customerNo && row.customerNo !== customerNo) return false;
-      if (input?.status && row.status !== input.status) return false;
-      const date = parseDate(row.receivedEnglishiDate ?? row.clearedEnglishiDate);
-      if (input?.year && date && date.getFullYear() !== input.year) return false;
-      if (input?.query && !customerNo) {
-        const term = input.query.toLowerCase();
-        const haystack = [row.customerNo, row.customerName, String(row.mRNo)]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
-      return true;
-    })
-    .slice(0, limit)
+  const statusFilter = normalizeChequeStatusFilter(input?.status);
+  const customerBranch =
+    branchCode != null ? await buildCustomerPrimaryBranchMap() : null;
+
+  const matched = (payload.value ?? []).filter((row) => {
+    if (customerNo && row.customerNo !== customerNo) return false;
+    if (branchCode && customerBranch) {
+      const custBranch = customerBranch.get(String(row.customerNo ?? ""));
+      if (custBranch !== branchCode) return false;
+    }
+    if (statusFilter && !statusMatchesFilter(row.status, statusFilter)) {
+      return false;
+    }
+    const date = parseDate(row.receivedEnglishiDate ?? row.clearedEnglishiDate);
+    if (input?.year && date && date.getFullYear() !== input.year) return false;
+    return true;
+  });
+
+  const totalAmount = round(
+    matched.reduce((sum, row) => sum + Number(row.amount ?? 0), 0),
+  );
+
+  const records = matched
     .map((row) => ({
       mrNo: row.mRNo,
       customerNo: row.customerNo,
       customerName: row.customerName,
       amount: round(Number(row.amount ?? 0)),
-      status: row.status,
+      status: String(row.status ?? "").trim(),
       paymentMode: row.paymentMode,
+      chequeNo: row.paymentModeNo,
+      drawnBank: row.drawnBankName || row.drawnBank,
       receivedDate: row.receivedEnglishiDate,
+      dueDate: row.chequeDueEnglishDate,
       clearedDate: row.clearedEnglishiDate,
-    }));
+      primaryBranchCode: customerBranch?.get(String(row.customerNo ?? "")) ?? null,
+      primaryBranchName: customerBranch?.get(String(row.customerNo ?? ""))
+        ? branchNameForCode(customerBranch.get(String(row.customerNo ?? ""))!)
+        : null,
+    }))
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, limit);
 
-  const totalAmount = round(
-    records.reduce((sum, row) => sum + row.amount, 0),
-  );
+  const byCustomer = new Map<
+    string,
+    { customerNo: string; customerName: string; amount: number; count: number }
+  >();
+  for (const row of matched) {
+    const no = String(row.customerNo ?? "");
+    if (!no) continue;
+    const agg =
+      byCustomer.get(no) ??
+      {
+        customerNo: no,
+        customerName: row.customerName ?? "",
+        amount: 0,
+        count: 0,
+      };
+    agg.amount += Number(row.amount ?? 0);
+    agg.count += 1;
+    byCustomer.set(no, agg);
+  }
 
   return {
     currency: "NPR",
-    matchCount: records.length,
+    quantityUnit: null,
+    filter: {
+      customerNo: customerNo ?? null,
+      customerName: customerName || null,
+      branchCode,
+      branchName: branchCode ? branchNameForCode(branchCode) : null,
+      status: statusFilter,
+      year: input?.year ?? null,
+    },
+    displayNote:
+      statusFilter === "Cheque Received"
+        ? 'Cheque in hand = MR status "Cheque Received" (received, not deposited/cleared). Branch filter uses each customer\'s primary sales depot from posted invoices — MR API has no branch field.'
+        : "MR money receipt records.",
+    matchCount: matched.length,
     totalAmount,
+    topCustomers: [...byCustomer.values()]
+      .map((row) => ({
+        ...row,
+        amount: round(row.amount),
+      }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 20),
     records,
     _syncedAt: payload._syncedAt,
   };
+}
+
+/** Cheque in hand = MR status Cheque Received (not deposited / not cleared). */
+export async function getChequeInHand(input?: {
+  query?: string;
+  customerNo?: string;
+  branchCode?: string;
+  limit?: number;
+}): Promise<unknown> {
+  return getMrRecords({
+    ...input,
+    status: "Cheque Received",
+    limit: input?.limit ?? 50,
+  });
+}
+
+function normalizeChequeStatusFilter(status?: string): string | null {
+  if (!status?.trim()) return null;
+  const s = status.trim().toLowerCase();
+  if (
+    /\bcheque\s+in\s+hand\b/.test(s) ||
+    /\b(received\s+)?not\s+deposit/.test(s) ||
+    /\bcheque\s+received\b/.test(s) ||
+    s === "received" ||
+    s === "cheque received"
+  ) {
+    return "Cheque Received";
+  }
+  if (/\bdeposit/.test(s) && !/\bnot\b/.test(s)) return "Cheque Deposited";
+  if (/\bclear/.test(s)) return "Cheque Cleared";
+  if (/\bbounc/.test(s)) return "Cheque Bounced";
+  if (/\bcash\b/.test(s)) return "Cash Received";
+  return status.trim();
+}
+
+function statusMatchesFilter(
+  rowStatus: string | undefined,
+  filter: string,
+): boolean {
+  return String(rowStatus ?? "").trim().toLowerCase() === filter.toLowerCase();
+}
+
+/** Customer → primary sales branch from posted invoice accountabilityCenter. */
+async function buildCustomerPrimaryBranchMap(): Promise<Map<string, string>> {
+  const posted = await loadPostedInvoiceLinePayloads();
+  const sales = new Map<string, Map<string, number>>();
+
+  function add(custNo: string, branch: string, amount: number): void {
+    if (!custNo || !branch) return;
+    const byBranch = sales.get(custNo) ?? new Map<string, number>();
+    byBranch.set(branch, (byBranch.get(branch) ?? 0) + amount);
+    sales.set(custNo, byBranch);
+  }
+
+  if (posted.usePostedInvoices) {
+    for (const line of posted.invoiceLines) {
+      const custNo = String(line.sellToCustomerNo ?? "").trim();
+      const branch =
+        normalizeBranchCode(String(line.accountabilityCenter ?? "")) ||
+        branchCodeFromDocument(line.documentNo) ||
+        "";
+      add(custNo, branch, Math.abs(postedLineSalesIncl(line)));
+    }
+  }
+
+  const primary = new Map<string, string>();
+  for (const [custNo, byBranch] of sales) {
+    const top = [...byBranch.entries()].sort((a, b) => b[1] - a[1])[0];
+    if (top?.[0]) primary.set(custNo, top[0]);
+  }
+  return primary;
 }
 
 /** Lookup one item by number or name fragment. */

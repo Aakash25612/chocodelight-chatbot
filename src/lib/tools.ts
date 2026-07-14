@@ -44,6 +44,7 @@ import {
   listBranches,
   getSalesOrdersSummary,
   getPendingSauda,
+  getChequeInHand,
   getSyncStatus,
   getTopCustomers,
   getTopCustomersByMonth,
@@ -661,14 +662,42 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_mr_records",
     description:
-      "Money receipt (MR) cheque/payment records. Search by customer or filter by year/status.",
+      "Money receipt (MR) cheque/payment records. For cheque in hand / Cheque Received / not deposited, prefer get_cheque_in_hand. Supports customer query, branchCode, and status (Cheque Received, Cheque Cleared, etc.).",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {
-        query: { type: SchemaType.STRING, description: "Customer name/number or MR search." },
+        query: { type: SchemaType.STRING, description: "Customer name/number or branch name." },
         customerNo: { type: SchemaType.STRING },
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Depot code e.g. W (Balkot). Filters by customer's primary sales branch.",
+        },
         year: { type: SchemaType.NUMBER },
-        status: { type: SchemaType.STRING, description: "e.g. Cheque Cleared." },
+        status: {
+          type: SchemaType.STRING,
+          description:
+            'e.g. "Cheque Received" (in hand), "Cheque Cleared", "Cheque Deposited". Aliases: cheque in hand, not deposited.',
+        },
+        limit: { type: SchemaType.NUMBER },
+      },
+    },
+  },
+  {
+    name: "get_cheque_in_hand",
+    description:
+      "MANDATORY for cheque in hand / cheques received not deposited. MR status Cheque Received. Pass branchCode for depot (e.g. W=Balkot) or query=customer name. NEVER answer with branch sales for cheque questions.",
+    parameters: {
+      type: SchemaType.OBJECT,
+      properties: {
+        query: {
+          type: SchemaType.STRING,
+          description: "Customer name, or branch name if no branchCode.",
+        },
+        customerNo: { type: SchemaType.STRING },
+        branchCode: {
+          type: SchemaType.STRING,
+          description: "Depot code, e.g. W for Balkot, J for Bhairahawa.",
+        },
         limit: { type: SchemaType.NUMBER },
       },
     },
@@ -1271,8 +1300,18 @@ export async function executeTool(
         result = await getMrRecords({
           query: args.query as string | undefined,
           customerNo: args.customerNo as string | undefined,
+          branchCode: args.branchCode as string | undefined,
           year: typeof args.year === "number" ? args.year : undefined,
           status: args.status as string | undefined,
+          limit: typeof args.limit === "number" ? args.limit : undefined,
+        });
+        break;
+      case "get_cheque_in_hand":
+        if (!useSupabaseMirror) return { error: mirrorOnly };
+        result = await getChequeInHand({
+          query: args.query as string | undefined,
+          customerNo: args.customerNo as string | undefined,
+          branchCode: args.branchCode as string | undefined,
           limit: typeof args.limit === "number" ? args.limit : undefined,
         });
         break;
