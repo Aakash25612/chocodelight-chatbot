@@ -54,3 +54,23 @@ test("default output date policy converts AD dates to BS", () => {
 test("explicit AD request keeps the AD calendar preference", () => {
   assert.equal(detectCalendarPreference("sales for June 2026 AD"), "ad");
 });
+
+test("outstanding customer rankings are not customer-name lookups", () => {
+  const topOne = planQuery("top customer outstanding ?", REFERENCE_DATE);
+  assert.equal(topOne.path, "deterministic");
+  if (topOne.path === "deterministic") {
+    assert.equal(topOne.tool, "get_outstanding_receivables");
+    assert.equal(topOne.args.limit, 1);
+  }
+
+  const topFive = planQuery(
+    "top 5 customers outstanding",
+    REFERENCE_DATE,
+  );
+  assert.equal(topFive.path, "deterministic");
+  if (topFive.path === "deterministic") {
+    assert.equal(topFive.tool, "get_outstanding_receivables");
+    assert.equal(topFive.args.limit, 5);
+    assert.equal(topFive.args.query, undefined);
+  }
+});

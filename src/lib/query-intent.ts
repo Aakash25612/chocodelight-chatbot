@@ -217,6 +217,14 @@ export function planQuery(
         /\b(?:above|over|more than|beyond|older than)\s*(\d+)\s*days?\b/,
       )?.[1],
     );
+    const rankingMatch = normalized.match(
+      /\b(?:top|first|highest|largest)\s*(\d{1,2})?\s*(?:customers?|part(?:y|ies)|dealers?|debtors?)\b/,
+    );
+    const rankingLimit = rankingMatch
+      ? rankingMatch[1]
+        ? Math.max(1, Math.min(Number(rankingMatch[1]), 50))
+        : 1
+      : undefined;
     return normalizedPlan(
       "receivables",
       Number.isFinite(minDays)
@@ -224,7 +232,7 @@ export function planQuery(
         : "get_outstanding_receivables",
       Number.isFinite(minDays)
         ? { minDaysOverdue: minDays, ageBy: "posting_date" }
-        : {},
+        : { limit: rankingLimit },
       message,
       referenceDate,
     );

@@ -14,6 +14,7 @@ import {
   getCustomerSales,
   getTopCustomers,
   getCollectionMetrics,
+  getOutstandingReceivables,
 } from "./analytics-queries";
 import { formatMetricTons } from "./uom-convert";
 import {
@@ -1077,9 +1078,9 @@ function parseMinDaysOverdue(message: string): number | undefined {
 function isCustomerRankingReceivablesQuery(message: string): boolean {
   const n = message.toLowerCase();
   return (
-    /\b(which|what|who)\s+(customer|party|dealer|client|buyer)\b/.test(n) ||
-    /\b(customer|party|dealer)\s+(most|highest|top|maximum|max)\b/.test(n) ||
-    /\b(top|highest|maximum|biggest)\s+(customer|party|dealer|debtor)\b/.test(n) ||
+    /\b(which|what|who)\s+(customers?|part(?:y|ies)|dealers?|clients?|buyers?)\b/.test(n) ||
+    /\b(customers?|part(?:y|ies)|dealers?)\s+(most|highest|top|maximum|max)\b/.test(n) ||
+    /\b(top|highest|maximum|biggest)\s*(?:\d{1,2}\s*)?(customers?|part(?:y|ies)|dealers?|debtors?)\b/.test(n) ||
     /\bwho\s+owes?\s+(the\s+)?most\b/.test(n) ||
     /\bmost\s+outstanding\b/.test(n)
   );
@@ -1171,6 +1172,54 @@ async function formatReceivablesResponse(
   const minDays = parseMinDaysOverdue(normalized);
   const ageBy = resolveReceivablesAgeBy(normalized);
   const customerQuery = extractCustomerQueryFromReceivablesMessage(message);
+  const asksCustomerRanking = isCustomerRankingReceivablesQuery(message);
+  if (!minDays && asksCustomerRanking && !customerQuery) {
+    const numberedLimit = message.match(
+      /\b(?:top|first|highest|largest)\s*(\d{1,2})\b/i,
+    )?.[1];
+    const limit = numberedLimit
+      ? Math.max(1, Math.min(Number(numberedLimit), 50))
+      : /\btop\s+customer\b/i.test(message)
+        ? 1
+        : 5;
+    const ranking = (await getOutstandingReceivables({
+      limit,
+      ...periodArgsFromProductSalesMessage(message),
+    })) as {
+      error?: string;
+      period?: string;
+      totals?: {
+        totalOutstanding?: number;
+        totalOverdue?: number;
+        totalNotYetDue?: number;
+      };
+      customers?: Array<{
+        rank: number;
+        customerNo: string;
+        name: string;
+        balance: number;
+        overdueAmount: number;
+        notYetDueAmount: number;
+      }>;
+      _syncedAt?: string;
+    };
+    if (ranking.error) return ranking.error;
+    const customers = ranking.customers ?? [];
+    const companyLabel = getCompany(getActiveCompany()).displayName;
+    return [
+      `**Top ${customers.length} ${customers.length === 1 ? "customer" : "customers"} by outstanding** — ${companyLabel}${formatSync(ranking._syncedAt)}`,
+      "",
+      `Period: **${ranking.period ?? `Nepali FY ${fiscalYearLabel(getCurrentFiscalYearStart() ?? 0)}`}**`,
+      `Total outstanding: **NPR ${formatAmount(ranking.totals?.totalOutstanding)}**`,
+      "",
+      "| Rank | Customer | Outstanding (NPR) | Overdue (NPR) | Not yet due (NPR) |",
+      "|---:|---|---:|---:|---:|",
+      ...customers.map(
+        (row) =>
+          `| ${row.rank} | ${escapeCell(row.name || row.customerNo)} | **${formatAmount(row.balance)}** | ${formatAmount(row.overdueAmount)} | ${formatAmount(row.notYetDueAmount)} |`,
+      ),
+    ].join("\n");
+  }
   const asksTotalOutstandingOnly =
     !minDays &&
     !customerQuery &&
