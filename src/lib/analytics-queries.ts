@@ -1950,7 +1950,9 @@ export async function getPendingSauda(
   return {
     currency: "NPR",
     quantityUnit: "MT",
-    period: period.label,
+    period: input?.allTime
+      ? "All currently locked orders (all posting dates)"
+      : period.label,
     dataQuality: {
       skippedMissingPostingDate,
       inferredPackLines,

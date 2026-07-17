@@ -172,7 +172,7 @@ Tool selection:
 - What one customer bought in a specific month/week/range -> get_customer_product_sales with query + year + month (June=6), or dateFrom/dateTo. NEVER answer with year-to-date when user asked for one month.
 - Inventory overview / stock value -> get_inventory_summary. Low stock -> get_low_stock_items.
 - Sales orders (open/locked counts, order list) -> get_sales_orders_summary or search_sales_orders. These are NOT posted ledger revenue.
-- CRITICAL — "sauda" / "pending sauda" / "ITEM average price in pending sauda" is ALWAYS get_pending_sauda. averagePricePerMT is the mean of each customer's NPR/MT rate (from unitPrice via UOM), not total amount÷total MT. Pass productQuery for item names; never treat item names as customers or confuse sauda with receivables. Present quantities in MT.
+- CRITICAL — "sauda" / "pending sauda" / "ITEM average price in pending sauda" is ALWAYS get_pending_sauda. By default include ALL currently Locked, unshipped orders across fiscal years; old orders remain pending after FY rollover. Apply a period only when the user explicitly asks. averagePricePerMT is the mean of each customer's NPR/MT rate. Pass productQuery for item names; never treat item names as customers or confuse sauda with receivables. Present quantities in MT.
 - Sales by salesperson -> get_sales_by_salesperson (posted invoices, Incl. VAT). Never use for "area wise" / "region wise".
 - CRITICAL — "cheque in hand" / "cheque received" / "not deposited" / "cheque in hand of code W" is ALWAYS get_cheque_in_hand (MR status Cheque Received). Pass branchCode for depot (W=Balkot) or query=customer. NEVER use get_sales_by_branch / get_branch_wise_sales for cheque questions.
 - MR cheque receipts (other statuses) -> get_mr_records.

@@ -37,7 +37,7 @@ export function cleanProductQueryFragment(text: string): string {
     .replace(/\b(average|avg)\s+((selling|unit)\s+)?price\b/gi, " ")
     .replace(/\b((selling|unit)\s+)?price\b/gi, " ")
     .replace(
-      /\b(tell|show|give|get|list|check|what(?:'s| is)?|his|her|their|the|please|pls)\b/gi,
+      /\b(tell|show|give|get|list|check|what(?:'s| is)?|me|my|his|her|their|the|please|pls)\b/gi,
       " ",
     )
     .replace(

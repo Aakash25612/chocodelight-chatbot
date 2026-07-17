@@ -42,7 +42,7 @@ export const REGRESSION_CASES: RegressionCase[] = [
     question: "MUSTARD CAKE 50 KGS [QNT] average price in pending sauda",
     tool: "get_pending_sauda",
     intent: "pending_sauda",
-    args: { fiscalYearStart: 2082 },
+    args: { allTime: true },
   },
   {
     id: "cheque-code-w",

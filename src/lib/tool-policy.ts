@@ -52,6 +52,29 @@ export function explicitlyRequestsAllTime(message: string): boolean {
   );
 }
 
+/** Whether the user explicitly constrained the time window. */
+export function explicitlyRequestsPeriod(message: string): boolean {
+  if (explicitlyRequestsAllTime(message)) return true;
+  if (parseBsMonth(message) != null) return true;
+  return /\b(?:this|current|last|previous)\s+(?:fiscal\s+year|fy|year|month|week)|\b(?:fy|fiscal\s+year)\s*(?:208\d|209\d)?|\b(?:208\d|209\d)\s*[/-]\s*(?:\d{2}|20\d{2})|\b(?:20\d{2})\b|\b(?:today|yesterday|ytd|year[\s-]*to[\s-]*date)|\b(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b|\b(?:baisakh|jestha|ashadh|shrawan|bhadra|ashwin|kartik|mangsir|poush|magh|falgun|chaitra)\b/i.test(
+    message,
+  );
+}
+
+function allTimeArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...args };
+  delete normalized.year;
+  delete normalized.month;
+  delete normalized.week;
+  delete normalized.day;
+  delete normalized.dateFrom;
+  delete normalized.dateTo;
+  delete normalized.nepaliMonth;
+  delete normalized.fiscalYearStart;
+  normalized.allTime = true;
+  return normalized;
+}
+
 export function extractMessagePeriod(
   message: string,
   referenceDate = new Date(),
@@ -108,20 +131,19 @@ export function normalizeToolArgs(
   if (!PERIOD_TOOLS.has(toolName)) return { ...args };
 
   const normalized = { ...args };
+  // Pending Sauda is a current backlog. Older locked, unshipped orders remain
+  // pending after fiscal-year rollover, so only apply a period when requested.
+  if (
+    toolName === "get_pending_sauda" &&
+    !explicitlyRequestsPeriod(message)
+  ) {
+    return allTimeArgs(normalized);
+  }
   const messagePeriod = extractMessagePeriod(message, referenceDate);
   const calendar = detectCalendarPreference(message);
 
   if (messagePeriod.allTime) {
-    delete normalized.year;
-    delete normalized.month;
-    delete normalized.week;
-    delete normalized.day;
-    delete normalized.dateFrom;
-    delete normalized.dateTo;
-    delete normalized.nepaliMonth;
-    delete normalized.fiscalYearStart;
-    normalized.allTime = true;
-    return normalized;
+    return allTimeArgs(normalized);
   }
 
   if (calendar === "ad") {

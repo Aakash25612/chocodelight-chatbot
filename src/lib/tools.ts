@@ -521,7 +521,7 @@ export const toolDeclarations: FunctionDeclaration[] = [
   {
     name: "get_pending_sauda",
     description:
-      "MANDATORY for any sauda/pending-sauda question. Locked sales orders where quantity − quantityShipped > 0. averagePricePerMT is the mean of each customer's NPR/MT rate (from unitPrice via UOM), not total amount÷total MT. Pass productQuery for item names; never treat items as customers.",
+      "MANDATORY for any sauda/pending-sauda question. Defaults to ALL currently Locked sales orders where quantity − quantityShipped > 0 across fiscal years, because old unshipped orders remain pending after FY rollover. Apply fiscalYearStart/date only when explicitly requested. averagePricePerMT is the mean of each customer's NPR/MT rate. Pass productQuery for item names; never treat items as customers.",
     parameters: {
       type: SchemaType.OBJECT,
       properties: {

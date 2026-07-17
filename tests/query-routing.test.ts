@@ -26,9 +26,16 @@ for (const regression of REGRESSION_CASES) {
       assert.equal(plan.args.query, undefined);
     }
 
-    if (regression.id !== "explicit-ad") {
+    if (
+      regression.id !== "explicit-ad" &&
+      regression.id !== "pending-sauda-product"
+    ) {
       assert.equal(plan.args.year, undefined);
       assert.equal(plan.args.fiscalYearStart, 2082);
+    }
+    if (regression.id === "pending-sauda-product") {
+      assert.equal(plan.args.fiscalYearStart, undefined);
+      assert.equal(plan.args.allTime, true);
     }
   });
 }
@@ -41,6 +48,40 @@ test("explicit all-time overrides the default fiscal year", () => {
     REFERENCE_DATE,
   );
   assert.deepEqual(args, { allTime: true });
+});
+
+test("pending sauda defaults to all locked orders but honors explicit FY", () => {
+  assert.deepEqual(
+    normalizeToolArgs(
+      "get_pending_sauda",
+      { fiscalYearStart: 2083 },
+      "show pending sauda of mustard cake",
+      REFERENCE_DATE,
+    ),
+    { allTime: true },
+  );
+  assert.deepEqual(
+    normalizeToolArgs(
+      "get_pending_sauda",
+      {},
+      "show pending sauda of mustard cake for fiscal year 2082/83",
+      REFERENCE_DATE,
+    ),
+    { fiscalYearStart: 2082, nepaliMonth: undefined },
+  );
+});
+
+test('"show me" is not included in pending-sauda product filter', () => {
+  const plan = planQuery(
+    "show me pending sauda of mustard cake",
+    REFERENCE_DATE,
+  );
+  assert.equal(plan.path, "deterministic");
+  if (plan.path === "deterministic") {
+    assert.equal(plan.tool, "get_pending_sauda");
+    assert.equal(plan.args.productQuery, "mustard cake");
+    assert.equal(plan.args.allTime, true);
+  }
 });
 
 test("default output date policy converts AD dates to BS", () => {

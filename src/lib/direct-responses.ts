@@ -33,6 +33,7 @@ import {
 import { planQuery } from "./query-intent";
 import {
   explicitlyRequestsAllTime,
+  explicitlyRequestsPeriod,
   extractMessagePeriod,
 } from "./tool-policy";
 import type { DatePeriodInput } from "./date-period";
@@ -371,12 +372,15 @@ async function formatPendingSauda(message: string): Promise<string> {
         : branchCode && !productQuery
           ? { branchCode }
           : {};
+  const periodArgs: DatePeriodInput = explicitlyRequestsPeriod(message)
+    ? extractMessagePeriod(message)
+    : { allTime: true };
 
   const data = (await getPendingSauda({
     ...useBranch,
     productQuery: productQuery || undefined,
     limit: 40,
-    ...periodArgsFromProductSalesMessage(message),
+    ...periodArgs,
   })) as {
     error?: string;
     period?: string;
